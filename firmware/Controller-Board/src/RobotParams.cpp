@@ -11,3 +11,6 @@ uint16_t IMUsampleRate = 500;
 uint16_t motorSendRate = 500;
 
 bool paused = false;
+
+float turnCurrentGain = 0.15;
+float moveCurrentGain = 0.3;

@@ -9,6 +9,14 @@
 float leftTargetCurrent = 0;
 float rightTargetCurrent = 0;
 
+volatile float joystickAxisX = 0;
+volatile float joystickAxisY = 0;
+volatile unsigned long joystickLastUpdateMs = 0;
+
+namespace {
+constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
+} // namespace
+
 void Task_LQR(void *pvParam) {
   unsigned long lastTime = 0;
 
@@ -52,42 +60,28 @@ void Task_LQR(void *pvParam) {
     + (K[4] * theta_dot[2])
     );
 
-    // Work out the indivudual wheel torques [Nm]
+    // Pull in the latest joystick input, but treat it as stale (i.e. zero
+    // it) if WebInterface hasn't refreshed it recently - protects against a
+    // dropped WebSocket leaving the robot driving on a frozen command.
+    float axisX = joystickAxisX;
+    float axisY = joystickAxisY;
+    if (millis() - joystickLastUpdateMs > JOYSTICK_TIMEOUT_MS) {
+      axisX = 0;
+      axisY = 0;
+    }
+    // Work out the indivudual wheel torques [Nm]: the joystick's turn/move
+    // request is added on top of the full balancing current, not blended
+    // against it - attenuating the LQR feedback by joystick magnitude let
+    // large commands starve the balance loop, tip the robot past
+    // deactivationAngle, and cut the motors entirely.
     float currentLeft = (current_LQR / 2);
     float currentRight = (current_LQR / 2);
 
+    currentLeft += turnCurrentGain * axisX;
+    currentLeft += moveCurrentGain * axisY;
 
-
-      // float turnCurrent = 0.2f;
-      // if (turn) {
-      //   currentLeft += turnCurrent;
-      //   //currentRight -= (turnCurrent);
-      //   Serial.print("TURNING \t");
-      // }
-
-      //float turnCurrent = 0.2f;
-      //float moveCurrent = 1.0f;
-
-      // float axisX = gamePadAxes[0];
-      // float axisY = gamePadAxes[1];
-
-      /*
-      currentLeft *= (1 - axisGain);
-      currentRight *= (1 - axisGain);
-
-      currentLeft += turnCurrent * axisX;
-      currentLeft += moveCurrent * axisY;
-
-      currentRight -= turnCurrent * axisX;
-      currentRight += moveCurrent * axisY;
-      */
-
-
-                // if (xSemaphoreTake(xGamepad_Semaphore, portMAX_DELAY) == pdTRUE) {
-
-
-
-                // }
+    currentRight -= turnCurrentGain * axisX;
+    currentRight += moveCurrentGain * axisY;
 
       //Serial.print("ang: "); Serial.print(RAD_TO_DEG * theta[2], 3); Serial.print("°");
       //Serial.print("\t"); Serial.print("sp: "); Serial.print(RAD_TO_DEG * angleSetPoint, 2); Serial.print("°");
@@ -106,20 +100,6 @@ void Task_LQR(void *pvParam) {
         leftTargetCurrent = currentLeft;
         rightTargetCurrent = currentRight;
       } else {
-        // currentLeft = 0;
-        // currentLeft += turnCurrent * axisX;
-        // currentLeft += moveCurrent * axisY;
-
-        // currentRight = 0;
-        // currentRight -= turnCurrent * axisX;
-        // currentRight += moveCurrent * axisY;
-
-        // currentLeft = constrain(currentLeft, -1, 1);
-        // currentRight = constrain(currentRight, -1, 1);
-
-        // motorLeft.target = currentLeft;
-        // motorRight.target = currentRight;
-
         leftTargetCurrent = 0;
         rightTargetCurrent = 0;
       }
@@ -128,9 +108,6 @@ void Task_LQR(void *pvParam) {
       //Serial.print("\t"); Serial.print("R: "); Serial.print(currentRight, 3); Serial.print("A");
 
       //Serial.print("\t"); Serial.print("DA: "); Serial.print(deactivationAngle, 1); Serial.print("°");
-
-      // Serial.print("\t"); Serial.print("tC: "); Serial.print(turnCurrent, 2); Serial.print("");
-      // Serial.print("\t"); Serial.print("mC: "); Serial.print(moveCurrent, 2); Serial.print("");
 
 
 
