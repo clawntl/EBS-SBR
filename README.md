@@ -36,12 +36,16 @@ A compact two-wheeled **self-balancing robot** with custom electronics: an ESP32
 
 ### Driver Board (`firmware/Driver-Board`)
 
+The motor drivers are the [**BLDC-Driver**](https://github.com/clawntl/BLDC-Driver) board, a compact 39 mm × 36 mm FOC driver. Its KiCad hardware, full documentation and the latest firmware live in that repo; `firmware/Driver-Board` here is the version used on this robot.
+
 - **MCU:** STM32G431CBU6 with hardware CORDIC acceleration
-- **Gate driver:** TI DRV8316 (6-PWM) with inline current sensing
+- **Power stage:** TI DRV8316 with integrated FETs (6-PWM), low-side current sensing on all three phases
 - **Encoder:** AS5048A magnetic sensor over SPI
-- **Control:** [SimpleFOC](https://simplefoc.com/), 11 pole-pair motors on a 12 V supply
-- **Comms:** FDCAN (classic CAN 2.0B, 1 Mbit/s), broadcasting shaft velocity every 10 ms
+- **Control:** [SimpleFOC](https://simplefoc.com/) current (torque) control, 11 pole-pair motors on a 12 V supply
+- **Comms:** FDCAN (classic CAN 2.0B, 1 Mbit/s), receiving target currents and broadcasting shaft velocity every 10 ms
 - **Flashing:** USB DFU (hold the DFU button, or trigger it over serial)
+
+See the BLDC-Driver [hardware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/hardware.md), [firmware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/firmware.md) and [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for details.
 
 ## CAN protocol
 
@@ -95,7 +99,7 @@ Default gains live in [`firmware/Controller-Board/src/RobotParams.cpp`](firmware
 ```
 docs/        Documentation
 firmware/    Controller-Board (ESP32-S3) and Driver-Board (STM32G431) PlatformIO projects
-hardware/    CAD and PCB design files
+hardware/    CAD and controller PCB design files (driver PCB: see BLDC-Driver)
 images/      Renders and photos
 ```
 
