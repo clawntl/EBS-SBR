@@ -1,0 +1,165 @@
+#include <Arduino.h>
+
+#include "SimpleCAN.h"   // <- this is the only include required, it should be smart enough to find the correct subclass
+uint32_t randomData = 0; // <- 32-bit unsigned is easy to use as can data (4 bytes)
+
+#define BTN_PIN 0
+
+float motorCur = 0.432;
+
+enum CAN_CMD : uint8_t {
+    CMD_CURRENT = 0x01,
+    CMD_SHAFT_VELOCITY = 0x02,
+    CMD_ERROR = 0xFF,
+};
+
+bool lastButtonState = LOW;
+
+
+
+
+void float2bytesMSB(float val, uint8_t *bytes) {
+    // Copy the raw bits of val into an integer so can perform
+    // bitwise operations
+    uint32_t valAsInt;
+    memcpy(&valAsInt, &val, sizeof(float));
+
+    // Extract the bytes in big-endian (MSB-first) order
+    bytes[0] = (valAsInt >> 24) & 0xFF;
+    bytes[1] = (valAsInt >> 16) & 0xFF;
+    bytes[2] = (valAsInt >> 8)  & 0xFF;
+    bytes[3] = (valAsInt >> 0)  & 0xFF;
+}
+
+float bytes2floatMSB(const uint8_t *bytes) {
+    // Readt the bytes in big-endian (MSB-first) order
+    uint32_t valAsInt = 
+        ((uint32_t)bytes[0] << 24) |
+        ((uint32_t)bytes[1] << 16) |
+        ((uint32_t)bytes[2] << 8)  |
+        ((uint32_t)bytes[3]);
+
+    // Copy the raw bits to a float and return
+    float val;
+    memcpy(&val, &valAsInt, sizeof(float));
+
+    return val;
+}
+
+void setup()
+{
+
+    Serial.begin(115200);
+    delay(5000);
+
+    pinMode(BTN_PIN, INPUT);
+
+    CAN.logTo(&Serial);
+    delay(2000);
+    Serial.println("Starting CAN");
+    // CAN.enableInternalLoopback();
+    CanFilter filter = CanFilter(MASK_STANDARD, 0x321, 0x7FF, FILTER_ANY_FRAME);
+    CAN.filter(filter);
+    CAN.begin(1'000'000);
+    delay(10);
+}
+
+uint32_t lastSendTime;
+
+void loop()
+{
+    bool currentButtonState = digitalRead(BTN_PIN);
+
+    uint32_t currentTime = millis();
+
+    //if (lastButtonState == LOW && currentButtonState == HIGH) {
+    if (currentTime - lastSendTime >= 1000) {
+        // Send a CAN Message
+        lastSendTime = currentTime;
+
+        uint8_t data[5]; // Stores all the bytes for the CAN Message payload (max 8 bytes)
+        uint8_t floatData[4]; // Stores a single float (4 bytes)
+
+        // Write the float into the byte array
+        float2bytesMSB(motorCur, floatData);
+
+        // Set the first byte of the message to the CAN_CMD type
+        data[0] = CMD_CURRENT;
+        // Copy the float into the message payload
+        memcpy(&data[1], floatData, (sizeof(floatData) / sizeof(floatData[0])));
+
+
+        bool isExtendedFrame = false;
+        uint32_t txIdentifier = 0x321;
+        bool isRtr = false;
+
+        delay(50);
+
+        CanMsg txMsg = CanMsg(
+            isExtendedFrame ? CanExtendedId(txIdentifier, isRtr) : CanStandardId(txIdentifier, isRtr),
+            (sizeof(data) / sizeof(data[0])),
+            data
+        );
+
+        delay(50);
+
+        CAN.write(txMsg);
+
+        delay(1);
+    }
+
+    lastButtonState = currentButtonState;
+
+    if (CAN.available() > 0)
+    {
+        CanMsg const rxMsg = CAN.read();
+
+        Serial.print("polling read: ");
+        if (rxMsg.isExtendedId()) {
+
+            //Serial.print(rxMsg.getExtendedId(), HEX);
+            //Serial.println(" Extended ✅");
+            //Serial.println(rxMsg);
+            for (int i = 0; i < rxMsg.data_length; i++) {
+                Serial.printf("%02X ", rxMsg.data[i]);
+            }
+            Serial.printf("= %.6f \n", bytes2floatMSB(rxMsg.data));
+
+        } else if (rxMsg.isStandardId()) {
+
+            //Serial.print(rxMsg.getStandardId(), HEX);
+            //Serial.println(" Standard ✅");
+            //Serial.println(rxMsg);
+            //Serial.print("Received: "); 
+            switch (rxMsg.data[0]) {
+                case CMD_CURRENT: {
+                    Serial.print("Received Motor Current: "); 
+                    for (int i = 1; i < rxMsg.data_length; i++) {
+                        Serial.printf("%02X ", rxMsg.data[i]);
+                    }
+                    Serial.printf("= %.6f A \n", bytes2floatMSB(rxMsg.data + 1));
+                    break;
+                }
+                case CMD_SHAFT_VELOCITY: {
+                    Serial.print("Received Shaft Velocity: "); 
+                    for (int i = 1; i < rxMsg.data_length; i++) {
+                        Serial.printf("%02X ", rxMsg.data[i]);
+                    }
+                    Serial.printf("= %.6f rad/s \n", bytes2floatMSB(rxMsg.data + 1));
+                    break;
+                }
+                case CMD_ERROR: {
+                    Serial.print("Received Error Message: "); 
+                    break;
+                }
+                default: {
+                    Serial.printf("Unknown Message Type: %02X ", rxMsg.data[0]);
+                    break;
+                }
+            }
+            
+        }
+    }
+
+    vTaskDelay(0);
+}
