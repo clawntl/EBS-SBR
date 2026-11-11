@@ -18,3 +18,8 @@ extern uint16_t IMUsampleRate;  // Hz
 extern uint16_t motorSendRate;  // Hz
 
 extern bool paused;
+
+// Joystick drive gains: how much current [A] full joystick deflection adds
+// on top of the balancing current.
+extern float turnCurrentGain;
+extern float moveCurrentGain;

@@ -7,6 +7,7 @@
 #include "PinConfig.h"
 #include "SerialCommands.h"
 #include "StatusLED.h"
+#include "WebInterface.h"
 
 void setup() {
 
@@ -15,6 +16,9 @@ void setup() {
     Serial.println("Hi world");
 
     initStatusLED();
+
+    Serial.println("Starting Web Interface");
+    initWebInterface();
 
     pinMode(BTN_PIN, INPUT);
 
@@ -49,5 +53,6 @@ void setup() {
 
 void loop() {
     processSerialCommands();
+    loopWebInterface();
     vTaskDelay(0);
 }
