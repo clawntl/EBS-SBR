@@ -99,7 +99,7 @@ Default gains live in [`firmware/Controller-Board/src/RobotParams.cpp`](firmware
 ```
 docs/        Documentation
 firmware/    Controller-Board (ESP32-S3) and Driver-Board (STM32G431) PlatformIO projects
-hardware/    CAD and controller PCB design files (driver PCB: see BLDC-Driver)
+hardware/    Full robot CAD (CAD/EBS-SBR.step) and controller PCB files (driver PCB: see BLDC-Driver)
 images/      Renders and photos
 ```
 
