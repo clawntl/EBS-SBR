@@ -4,6 +4,7 @@
 
 #include "CanBus.h"
 #include "IMUDriver.h"
+#include "MotorDrivers.h"
 #include "RobotParams.h"
 
 float leftTargetCurrent = 0;
@@ -12,6 +13,8 @@ float rightTargetCurrent = 0;
 volatile float joystickAxisX = 0;
 volatile float joystickAxisY = 0;
 volatile unsigned long joystickLastUpdateMs = 0;
+
+volatile BalanceState balanceState = BalanceState::MotorsNotReady;
 
 namespace {
 constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
@@ -35,7 +38,10 @@ void Task_LQR(void *pvParam) {
       lastTime = currentTime;
 
 
-      phi_dot = ((leftShaftVelocity + rightShaftVelocity) / 2);
+      // Only trust the wheel velocities while both drivers are running FOC:
+      // a stopped driver stops sending them, so the last value would go stale.
+      const bool motorsOk = motorsReady();
+      phi_dot = motorsOk ? ((leftShaftVelocity + rightShaftVelocity) / 2) : 0.0f;
 
       phi += phi_dot * dt;
 
@@ -96,12 +102,18 @@ void Task_LQR(void *pvParam) {
       currentRight = constrain(currentRight, -1, 1);
 
       //if (!paused && (((theta[1] - angleSetPoint) < (deactivationAngle * DEG_TO_RAD)) && ((theta[1] - angleSetPoint)  > (-deactivationAngle * DEG_TO_RAD)))) {
-      if (!paused && (((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD)))) {
+      const bool upright = ((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD));
+      // Don't drive one wheel on its own if the other driver is down.
+      if (!paused && upright && motorsOk) {
         leftTargetCurrent = currentLeft;
         rightTargetCurrent = currentRight;
+        balanceState = BalanceState::Balancing;
       } else {
         leftTargetCurrent = 0;
         rightTargetCurrent = 0;
+        balanceState = !motorsOk ? BalanceState::MotorsNotReady
+                     : paused    ? BalanceState::Paused
+                                 : BalanceState::Tipped;
       }
 
       //Serial.print("\t"); Serial.print("L: "); Serial.print(currentLeft, 3); Serial.print("A");

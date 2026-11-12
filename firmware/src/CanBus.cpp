@@ -6,11 +6,14 @@
 #include "ByteUtils.h"
 #include "CANConfig.h"
 #include "LQRControl.h"
+#include "MotorDrivers.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
 
 float leftShaftVelocity = 0;
 float rightShaftVelocity = 0;
+
+bool canBusOk = false;
 
 namespace {
 ACAN_ESP32FD can0;
@@ -38,7 +41,8 @@ bool initCanBus() {
                   (unsigned long) settings.actualArbitrationBitRate(),
                   settings.arbitrationSamplePointFromBitStart());
 
-    return errorCode == 0;
+    canBusOk = (errorCode == 0);
+    return canBusOk;
 }
 
 // Send the message to start FOC on the motor
@@ -100,50 +104,80 @@ void sendMotorCurrents(float leftCur, float rightCur, uint32_t canID) {
     can0.tryToSend(txMsg);
 }
 
+// Handles one frame from a motor driver (telemetry IDs 0x100/0x101).
+static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
+    if (rxMsg.len < 1) return;
+
+    switch (rxMsg.data[0]) {
+        case CMD_SHAFT_VELOCITY: {
+            if (rxMsg.len < 5) return;
+            const float v = bytes2floatMSB(rxMsg.data + 1);
+            if (side == MOTOR_LEFT) leftShaftVelocity = v;
+            else                    rightShaftVelocity = v;
+            break;
+        }
+        case CMD_DRIVER_STATUS: {
+            if (rxMsg.len < 3) return;
+            handleDriverStatusFrame(side, rxMsg.data[1], rxMsg.data[2]);
+            break;
+        }
+        case CMD_START_FOC: {
+            if (rxMsg.len < 5) return;
+            handleDriverStartReply(side, bytes2floatMSB(rxMsg.data + 1) > 0.5f);
+            break;
+        }
+        case CMD_ERROR: {
+            if (rxMsg.len < 5) return;
+            handleDriverError(side, (uint8_t)bytes2floatMSB(rxMsg.data + 1));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 // Task checks the rx buffer and deals with the messages
 void Task_readCAN(void *pvParams) {
     while (1) {
+        CANMessage rxMsg;
+        // Drain everything that's queued, then yield.
+        while (can0.receive(rxMsg)) {
+            // Only standard (11 bit) IDs are used by this protocol.
+            if (rxMsg.ext) continue;
 
-        // If there are message in the rx buffer
-        if (can0.available()) {
-
-            // Read the message
-            CANMessage rxMsg;
-            can0.receive(rxMsg);
-
-            // If it is using standard ID format (11 bit)
-            if (!rxMsg.ext) {
-                // Check the first payload byte (command byte)
-                switch (rxMsg.data[0]) {
-                    // If it is a velocity
-                    case CMD_SHAFT_VELOCITY: {
-                            // Find if it is left or right side using the message ID
-                            switch (rxMsg.id) {
-                                case RIGHT_MOTOR_VELOCITY_CAN_ID : {
-                                    rightShaftVelocity = bytes2floatMSB(rxMsg.data + 1);
-                                    break;
-                                }
-                                case LEFT_MOTOR_VELOCITY_CAN_ID : {
-                                    leftShaftVelocity = bytes2floatMSB(rxMsg.data + 1);
-                                    break;
-                                }
-                            }
-                            break;
-                    }
-                }
-
+            switch (rxMsg.id) {
+                case LEFT_MOTOR_VELOCITY_CAN_ID:  handleDriverFrame(MOTOR_LEFT, rxMsg);  break;
+                case RIGHT_MOTOR_VELOCITY_CAN_ID: handleDriverFrame(MOTOR_RIGHT, rxMsg); break;
+                default: break;
             }
         }
-        vTaskDelay(0);
+        // 1 tick: lets lower-priority tasks on this core run (vTaskDelay(0)
+        // only yields to equal/higher priority). Frames queue in the driver's
+        // receive buffer in the meantime.
+        vTaskDelay(1);
     }
 }
 
 void Task_sendMotorCurrents(void *pvParams) {
-    while (1) {
-        TickType_t xLastWakeTime = xTaskGetTickCount();
+    // Initialised ONCE: xTaskDelayUntil() advances it by exactly one period
+    // per call, giving a fixed send rate. (Re-reading the tick count every
+    // iteration made it a plain delay of one period after the send, so the
+    // rate drifted below motorSendRate.)
+    TickType_t xLastWakeTime = xTaskGetTickCount();
 
+    while (1) {
         sendMotorCurrents(leftTargetCurrent, rightTargetCurrent, BOTH_MOTOR_CAN_ADDR);
 
-        xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS((uint16_t)(1000 / motorSendRate)));
+        // motorSendRate can be changed live from the web page; guard against 0
+        // and keep the period at least one tick.
+        const uint16_t rate = motorSendRate ? motorSendRate : 1;
+        TickType_t period = pdMS_TO_TICKS(1000 / rate);
+        if (period == 0) period = 1;
+
+        // If we've fallen more than a period behind (e.g. the rate was just
+        // lowered), resync rather than sending a burst to catch up.
+        if (xTaskGetTickCount() - xLastWakeTime > period) xLastWakeTime = xTaskGetTickCount();
+
+        xTaskDelayUntil(&xLastWakeTime, period);
     }
 }

@@ -6,6 +6,9 @@
 extern float leftShaftVelocity;
 extern float rightShaftVelocity;
 
+// True once initCanBus() succeeded.
+extern bool canBusOk;
+
 // Brings up the CAN transceiver. Returns true on success.
 bool initCanBus();
 
