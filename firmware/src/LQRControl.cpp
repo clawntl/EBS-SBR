@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "CANConfig.h"
 #include "CanBus.h"
 #include "IMUDriver.h"
 #include "MotorDrivers.h"
@@ -18,10 +19,22 @@ volatile BalanceState balanceState = BalanceState::MotorsNotReady;
 
 namespace {
 constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
+
+// If no IMU sample arrives for this long, stop driving the motors (0 A)
+// rather than balancing on a stale tilt measurement. 10 ms = 5 missed
+// samples at the default 500 Hz.
+constexpr uint32_t IMU_SAMPLE_TIMEOUT_MS = 10;
 } // namespace
 
 void Task_LQR(void *pvParam) {
-  unsigned long lastTime = 0;
+  // Run once per IMU sample: Task_BMI160 notifies this task after each one.
+  // Running in between would only recompute the same output from the same
+  // inputs, and (at equal priority) delay the other tasks on this core.
+  setImuSampleListener(xTaskGetCurrentTaskHandle());
+
+  // Started from the current time, so the first dt isn't "time since boot".
+  unsigned long lastTime = micros();
+  bool imuStalled = false;
 
   // uint16_t motorKV = 100;
   // float motorKT = 60 / (2 * PI * motorKV);
@@ -30,7 +43,26 @@ void Task_LQR(void *pvParam) {
   float phi_dot = 0;
 
   while (1) {
-    //if (xSemaphoreTake(xIMU_Semaphore, pdMS_TO_TICKS(1)) == pdTRUE) {
+      // Wait for the next IMU sample. pdTRUE: clear the count, so if samples
+      // were missed we just run once on the newest one.
+      if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(IMU_SAMPLE_TIMEOUT_MS)) == 0) {
+        // IMU stalled: 0 A, and keep sending it so the drivers get an explicit
+        // zero rather than relying on their own command timeout.
+        if (!imuStalled) {
+          Serial.printf("LQR: no IMU sample for %lu ms - motors set to 0 A\n", (unsigned long)IMU_SAMPLE_TIMEOUT_MS);
+          imuStalled = true;
+        }
+        leftTargetCurrent = 0;
+        rightTargetCurrent = 0;
+        balanceState = BalanceState::ImuStalled;
+        sendMotorCurrents(0, 0, BOTH_MOTOR_CAN_ADDR);
+        lastTime = micros(); // don't integrate phi over the gap
+        continue;
+      }
+      if (imuStalled) {
+        Serial.println("LQR: IMU samples resumed");
+        imuStalled = false;
+      }
 
 
       unsigned long currentTime = micros();
@@ -116,6 +148,10 @@ void Task_LQR(void *pvParam) {
                                  : BalanceState::Tipped;
       }
 
+      // Send straight away (previously a separate 500 Hz task sent whatever
+      // the latest values were, adding up to one extra period of delay).
+      sendMotorCurrents(leftTargetCurrent, rightTargetCurrent, BOTH_MOTOR_CAN_ADDR);
+
       //Serial.print("\t"); Serial.print("L: "); Serial.print(currentLeft, 3); Serial.print("A");
       //Serial.print("\t"); Serial.print("R: "); Serial.print(currentRight, 3); Serial.print("A");
 
@@ -143,9 +179,5 @@ void Task_LQR(void *pvParam) {
     //   Serial.print("\tK3: "); Serial.print(K[3], 3);
     //   Serial.print("\tK4: "); Serial.print(K[4], 3);
     //   Serial.println();
-
-
-
-    //}
   }
 }

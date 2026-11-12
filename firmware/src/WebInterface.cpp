@@ -29,7 +29,6 @@ void buildStateJson(JsonDocument &doc) {
     doc["deactivationAngle"] = deactivationAngle;
     doc["alpha"] = alpha;
     doc["IMUsampleRate"] = IMUsampleRate;
-    doc["motorSendRate"] = motorSendRate;
     doc["paused"] = paused;
     doc["turnCurrentGain"] = turnCurrentGain;
     doc["moveCurrentGain"] = moveCurrentGain;
@@ -54,7 +53,6 @@ void handleSet(const char *key, float value) {
     else if (!strcmp(key, "deactivationAngle")) deactivationAngle = value;
     else if (!strcmp(key, "alpha")) alpha = value;
     else if (!strcmp(key, "IMUsampleRate")) IMUsampleRate = (uint16_t)value;
-    else if (!strcmp(key, "motorSendRate")) motorSendRate = (uint16_t)value;
     else if (!strcmp(key, "paused")) paused = value != 0;
     else if (!strcmp(key, "turnCurrentGain")) turnCurrentGain = value;
     else if (!strcmp(key, "moveCurrentGain")) moveCurrentGain = value;

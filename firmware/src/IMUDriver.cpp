@@ -28,6 +28,9 @@ float Y_Offset;
 float Z_Offset;
 float pitchOffset;
 
+// Task woken (FreeRTOS task notification) after every new orientation sample.
+TaskHandle_t sampleListener = nullptr;
+
 uint32_t prevMicros_gyro;
 
 float gyroYaw;
@@ -235,9 +238,18 @@ void initIMU() {
   flashStatusLED(RGBColour{246, 20, 247}, 3, 150, 150); // 3 Purple Flashes
 }
 
+void setImuSampleListener(TaskHandle_t task) {
+  sampleListener = task;
+}
+
 void Task_BMI160(void *pvParams) {
+  // Initialised ONCE: xTaskDelayUntil() advances it by exactly one period per
+  // call, giving a fixed sample rate. (Re-reading the tick count at the top of
+  // every iteration made it a plain delay after the work, so the real period
+  // was work time + period and the rate drifted below IMUsampleRate.)
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
   while (1) {
-    TickType_t xLastWakeTime = xTaskGetTickCount();
 
     struct bmi160_sensor_data accel;
     struct bmi160_sensor_data gyro;
@@ -307,17 +319,30 @@ void Task_BMI160(void *pvParams) {
 
 
 
-    // if (xIMU_Semaphore != NULL) {
-    //   xSemaphoreGive(xIMU_Semaphore);
-    // }
+    // New sample is complete: wake the LQR task so it runs straight away on
+    // a consistent set of theta/theta_dot values.
+    if (sampleListener != nullptr) {
+      xTaskNotifyGive(sampleListener);
+    }
 
     // Serial.print(theta[0], 8);
     // Serial.print(";");
     // Serial.print(theta[1], 8);
     // Serial.print(";");
     // Serial.println(theta[2], 8);
-    // Ensure the tasks runs at a fixed rate equal to or slighty greater the IMU Sampling rate.
-    xTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS((uint16_t)(1000 / IMUsampleRate)));
+
+    // Fixed rate. IMUsampleRate can be changed live from the web page; guard
+    // against 0 and keep the period at least one tick. NOTE: the period is a
+    // whole number of 1 ms ticks, so e.g. 300 Hz actually runs at 333 Hz.
+    const uint16_t rate = IMUsampleRate ? IMUsampleRate : 1;
+    TickType_t period = pdMS_TO_TICKS(1000 / rate);
+    if (period == 0) period = 1;
+
+    // If we've fallen more than a period behind (e.g. the rate was just
+    // lowered), resync rather than sampling in a burst to catch up.
+    if (xTaskGetTickCount() - xLastWakeTime > period) xLastWakeTime = xTaskGetTickCount();
+
+    xTaskDelayUntil(&xLastWakeTime, period);
   }
   //vTaskDelay(1);
 }

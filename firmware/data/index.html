@@ -179,8 +179,7 @@
 
   <div class="panel">
     <h2>Rates (applied after reboot)</h2>
-    <div class="row"><label for="IMUsampleRate">IMU rate (Hz)</label><input type="number" id="IMUsampleRate" min="50" max="1000" step="10"></div>
-    <div class="row"><label for="motorSendRate">Motor rate (Hz)</label><input type="number" id="motorSendRate" min="50" max="1000" step="10"></div>
+    <div class="row"><label for="IMUsampleRate">IMU / control rate (Hz)</label><input type="number" id="IMUsampleRate" min="50" max="1000" step="10"></div>
   </div>
 
   <button id="pauseBtn">Pause</button>
@@ -208,7 +207,7 @@
 
 <script>
 const fields = ["K0","K1","K2","K3","K4","K5","angleSetPoint","deactivationAngle","alpha","turnCurrentGain","moveCurrentGain"];
-const rateFields = ["IMUsampleRate","motorSendRate"];
+const rateFields = ["IMUsampleRate"];
 let ws;
 let paused = false;
 let activeField = null; // field currently being dragged, skip remote updates for it

@@ -8,7 +8,6 @@ float deactivationAngle = 42;
 
 float alpha = 0.998;
 uint16_t IMUsampleRate = 500;
-uint16_t motorSendRate = 500;
 
 bool paused = false;
 

@@ -32,6 +32,7 @@ const char *balanceName(BalanceState s) {
         case BalanceState::Paused:         return "PAUSED";
         case BalanceState::Tipped:         return "TIPPED";
         case BalanceState::MotorsNotReady: return "MOTORS OFF";
+        case BalanceState::ImuStalled:     return "IMU STALL";
     }
     return "?";
 }
@@ -47,6 +48,7 @@ bool drawProblems() {
     };
 
     if (!canBusOk) add("CAN init failed");
+    if (balanceState == BalanceState::ImuStalled) add("IMU stalled - 0 A");
 
     for (int s = 0; s < 2; s++) {
         const MotorDriverInfo &m = info[s];

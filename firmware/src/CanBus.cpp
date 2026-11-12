@@ -157,27 +157,3 @@ void Task_readCAN(void *pvParams) {
         vTaskDelay(1);
     }
 }
-
-void Task_sendMotorCurrents(void *pvParams) {
-    // Initialised ONCE: xTaskDelayUntil() advances it by exactly one period
-    // per call, giving a fixed send rate. (Re-reading the tick count every
-    // iteration made it a plain delay of one period after the send, so the
-    // rate drifted below motorSendRate.)
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-
-    while (1) {
-        sendMotorCurrents(leftTargetCurrent, rightTargetCurrent, BOTH_MOTOR_CAN_ADDR);
-
-        // motorSendRate can be changed live from the web page; guard against 0
-        // and keep the period at least one tick.
-        const uint16_t rate = motorSendRate ? motorSendRate : 1;
-        TickType_t period = pdMS_TO_TICKS(1000 / rate);
-        if (period == 0) period = 1;
-
-        // If we've fallen more than a period behind (e.g. the rate was just
-        // lowered), resync rather than sending a burst to catch up.
-        if (xTaskGetTickCount() - xLastWakeTime > period) xLastWakeTime = xTaskGetTickCount();
-
-        xTaskDelayUntil(&xLastWakeTime, period);
-    }
-}

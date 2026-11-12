@@ -17,4 +17,3 @@ void sendFloat(uint8_t cmd, float dat, uint32_t canID);
 void sendMotorCurrents(float leftCur, float rightCur, uint32_t canID);
 
 void Task_readCAN(void *pvParams);
-void Task_sendMotorCurrents(void *pvParams);

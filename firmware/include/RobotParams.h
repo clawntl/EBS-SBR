@@ -14,8 +14,9 @@ extern float angleSetPoint;     // Unit: rad from upright
 extern float deactivationAngle; // Unit: deg
 
 extern float alpha; // Complementary filter coefficient
-extern uint16_t IMUsampleRate;  // Hz
-extern uint16_t motorSendRate;  // Hz
+// IMU sample rate [Hz]. Also the LQR rate and the motor current CAN send
+// rate: Task_LQR runs and sends once per IMU sample.
+extern uint16_t IMUsampleRate;
 
 extern bool paused;
 
