@@ -216,10 +216,30 @@ const dot = document.getElementById("dot");
 const statusText = document.getElementById("statusText");
 const pauseBtn = document.getElementById("pauseBtn");
 
+// --- WebSocket with reconnect + staleness watchdog ---
+// Build the URL from location.host: the firmware always redirects to the IP,
+// so this is 192.168.4.1 whether opened in the portal sheet or a browser.
+// The firmware sends a {"hb":1} heartbeat every second; if we hear nothing
+// for STALE_MS the socket is presumed dead (portal sheets, especially on
+// iOS, can freeze a socket without ever firing 'close') and is recycled.
+const STALE_MS = 3500;
+let retryDelay = 500, retryTimer = null, lastMsg = 0;
+
+function scheduleReconnect() {
+  if (retryTimer) return;
+  retryTimer = setTimeout(() => { retryTimer = null; connect(); }, retryDelay);
+  retryDelay = Math.min(retryDelay * 2, 5000); // exponential backoff, capped
+}
+
 function connect() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  statusText.textContent = "Connecting...";
   ws = new WebSocket(`ws://${location.host}/ws`);
 
   ws.onopen = () => {
+    retryDelay = 500;
+    lastMsg = Date.now();
     dot.classList.add("connected");
     statusText.textContent = "Connected";
   };
@@ -227,13 +247,16 @@ function connect() {
   ws.onclose = () => {
     dot.classList.remove("connected");
     statusText.textContent = "Disconnected - retrying...";
-    setTimeout(connect, 1000);
+    scheduleReconnect();
   };
 
   ws.onerror = () => ws.close();
 
   ws.onmessage = (evt) => {
-    const state = JSON.parse(evt.data);
+    lastMsg = Date.now();
+    let state;
+    try { state = JSON.parse(evt.data); } catch (e) { return; }
+    if (!state.K) return; // heartbeat or other non-state message
     fields.forEach((f, idx) => {
       if (f === activeField) return;
       const el = document.getElementById(f);
@@ -249,6 +272,14 @@ function connect() {
     updatePauseButton();
   };
 }
+
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsg > STALE_MS) ws.close();
+}, 1000);
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) connect(); // no-op if already open/connecting
+});
 
 function formatVal(v) {
   return Number(v).toFixed(3).replace(/0+$/,'').replace(/\.$/,'');
@@ -402,6 +433,15 @@ const gamepadRescan = document.getElementById("gamepadRescan");
 const gamepadNote = document.getElementById("gamepadNote");
 let selectedGamepadIndex = -1;
 
+// Captive-portal browsers may have no (or a throwing) localStorage and may
+// lack the Gamepad API, so every access goes through these guards. Without
+// them one exception here would stop the rest of the script running.
+function storageGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+function storageSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+function getPads() {
+  try { return navigator.getGamepads ? (navigator.getGamepads() || []) : []; } catch (e) { return []; }
+}
+
 function stopGamepadDrive() {
   selectedGamepadIndex = -1;
   gamepadSelect.value = "-1";
@@ -413,8 +453,8 @@ function stopGamepadDrive() {
 }
 
 function refreshGamepadList() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-  const rememberedId = localStorage.getItem(GAMEPAD_ID_KEY);
+  const pads = getPads();
+  const rememberedId = storageGet(GAMEPAD_ID_KEY);
   const stillConnected = selectedGamepadIndex !== -1 && pads[selectedGamepadIndex];
 
   gamepadSelect.innerHTML = '<option value="-1">Touch joystick only</option>';
@@ -452,8 +492,8 @@ gamepadSelect.addEventListener("change", () => {
     return;
   }
   selectedGamepadIndex = idx;
-  const gp = navigator.getGamepads()[idx];
-  if (gp) localStorage.setItem(GAMEPAD_ID_KEY, gp.id);
+  const gp = getPads()[idx];
+  if (gp) storageSet(GAMEPAD_ID_KEY, gp.id);
 });
 
 gamepadRescan.addEventListener("click", refreshGamepadList);
@@ -464,7 +504,7 @@ function pollGamepadDrive() {
   if (selectedGamepadIndex === -1) return;
   if (joyDragging) return; // touch joystick wins while it's actively held
 
-  const gp = navigator.getGamepads()[selectedGamepadIndex];
+  const gp = getPads()[selectedGamepadIndex];
   if (!gp || gp.connected === false) {
     stopGamepadDrive();
     refreshGamepadList();
@@ -482,10 +522,9 @@ function pollGamepadDrive() {
   sendJoystick();
 }
 
+connect(); // first, so nothing below can prevent the socket coming up
 refreshGamepadList();
 setInterval(pollGamepadDrive, GAMEPAD_POLL_MS);
-
-connect();
 </script>
 </body>
 </html>
