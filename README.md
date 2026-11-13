@@ -95,8 +95,21 @@ See the BLDC-Driver [firmware guide](https://github.com/clawntl/BLDC-Driver/blob
 
 The controller runs a Wi-Fi access point:
 
-- **SSID:** `BalanceBot`
-- **Password:** `balancebot`
+- **SSID:** `BalanceBot-xxxxxx`
+- **Password:** `balancebot-xxxxxx`
+
+where `xxxxxx` is the last three bytes of the board's soft-AP MAC address in lower-case hex, so every robot has its own network. Both are printed on the serial console at boot, along with a `WIFI:...` string that can be pasted into a QR code generator to make a scan-to-join code.
+
+To make a printable scan-to-join sign (PNG) and a bare QR code (SVG) for a robot, pass its suffix to the helper script:
+
+```
+python3 -m venv .venv
+source .venv/bin/activate                 # Windows: .venv\Scripts\activate
+pip install "qrcode[pil]"
+python tools/wifi_qr.py 5302cc            # or several: 5302cc a1b2c3 ...
+```
+
+The files are written to `tools/qr-codes/` (git-ignored, as they contain the robot's password); use `--out DIR` to put them elsewhere.
 
 Connect, then open the IP address printed on the serial console at boot (normally `http://192.168.4.1`). The page updates live over a WebSocket and provides:
 
