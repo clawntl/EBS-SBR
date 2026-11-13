@@ -1,9 +1,14 @@
-# PlatformIO build output
+# PlatformIO build output and tooling caches
 .pio/
-.vscode/.browse.c_cpp.db*
-.vscode/ipch
-.vscode/c_cpp_properties.json
-.vscode/launch.json
+.cache/
+.dummy
+compile_commands.json
+
+# VS Code: machine-generated / per-user files (extensions.json is shared)
+**/.vscode/.browse.c_cpp.db*
+**/.vscode/ipch
+**/.vscode/c_cpp_properties.json
+**/.vscode/launch.json
 
 # OS junk
 .DS_Store
