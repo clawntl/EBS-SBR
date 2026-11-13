@@ -15,7 +15,8 @@
 
 namespace {
 
-constexpr uint8_t  OLED_ADDR = 0x3C;   // some modules are 0x3D
+// Addresses to probe, in order (most modules are 0x3C, some are strapped to 0x3D).
+constexpr uint8_t  OLED_ADDRS[] = { 0x3C, 0x3D };
 constexpr uint32_t REFRESH_MS = 200;   // 5 Hz
 // How long a driver error report stays on the problem screen.
 constexpr uint32_t ERROR_SHOW_MS = 10'000;
@@ -113,15 +114,37 @@ void drawNormal() {
 
 } // namespace
 
+// True if a device ACKs its address. A zero-length write is an address-only
+// probe, so nothing is sent to the device.
+bool i2cProbe(uint8_t addr) {
+    Wire.beginTransmission(addr);
+    return Wire.endTransmission() == 0;
+}
+
 bool initDisplay() {
+    displayOk = false;
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(400000);
 
-    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-        Serial.println("OLED init failed (check wiring / I2C address) - continuing without display");
-        displayOk = false;
+    // Adafruit_SSD1306::begin() doesn't check the device is there (it only
+    // fails if the frame buffer can't be allocated), so without this probe a
+    // missing OLED makes every display() call fail and spam the log.
+    uint8_t addr = 0;
+    for (uint8_t a : OLED_ADDRS) {
+        if (i2cProbe(a)) { addr = a; break; }
+    }
+    if (addr == 0) {
+        Serial.println("OLED not found on I2C - continuing without display");
+        Wire.end(); // nothing else is on this bus; release the pins and driver
         return false;
     }
+
+    if (!display.begin(SSD1306_SWITCHCAPVCC, addr)) {
+        Serial.println("OLED init failed (out of memory) - continuing without display");
+        Wire.end();
+        return false;
+    }
+    Serial.printf("OLED found at 0x%02X\n", addr);
     displayOk = true;
     display.cp437(true); // so DEGREE maps to the degree sign
     display.setTextColor(SSD1306_WHITE);
