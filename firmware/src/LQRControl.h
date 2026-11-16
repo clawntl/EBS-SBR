@@ -11,8 +11,8 @@ extern float rightTargetCurrent;
 // message. Range -1..1. Task_LQR treats this as stale (and zeros it) if it
 // hasn't been refreshed within JOYSTICK_TIMEOUT_MS, so a dropped connection
 // can't leave the robot driving blind.
-extern volatile float joystickAxisX; // turn
-extern volatile float joystickAxisY; // forward/back
+extern volatile float joystickAxisX; // turn rate set point, x maxTurnRate
+extern volatile float joystickAxisY; // wheel speed set point, x maxWheelSpeed
 extern volatile unsigned long joystickLastUpdateMs;
 
 // What Task_LQR is currently doing (for the display).
@@ -37,12 +37,25 @@ struct ControlSample {
     float setpoint;       // [deg] angleSetPoint
     float phi;            // [rad] wheel angle, integrated from phiDot
     float phiDot;         // [rad/s] average of both wheels' speed
-    float yawRate;        // [deg/s]
+    float yawRate;        // [deg/s] positive = the way a positive yawCur turns it
     float wheelL, wheelR; // [rad/s] as reported by the drivers
     float lqr;            // [A] total balancing current from the LQR (before split/joystick/gating)
     float curL, curR;     // [A] currents actually sent
     float joyX, joyY;     // joystick input actually used (-1..1, 0 if stale)
     BalanceState state;
+
+    // Position & heading hold (0 unless balancing).
+    float posErr;         // [rad] wheel angle minus its reference (clamped)
+    float speedRef;       // [rad/s] ramped wheel speed set point
+    float heading;        // [deg] heading since balancing started
+    float headErr;        // [deg] heading minus its reference (clamped)
+    float yawRateRef;     // [deg/s] requested turn rate
+    float yawCur;         // [A] differential current (+ left, - right)
+
+    // Raw IMU, body frame (see IMUDriver.h).
+    float pitch;          // [deg] theta[1]
+    float gyro[3];        // [deg/s] x, y, z, offsets removed
+    float accel[3];       // [g] x, y, z
 };
 
 // Latest step plus the measured control loop rate [Hz].

@@ -11,5 +11,10 @@ uint16_t IMUsampleRate = 500;
 
 bool paused = false;
 
-float turnCurrentGain = 0.15;
-float moveCurrentGain = 0.3;
+float maxWheelSpeed = 10;
+float maxWheelAccel = 20;
+float maxTurnRate = 90 * DEG_TO_RAD;
+float turnFeedForward = 0.15;
+bool yawInvert = false;
+float maxPositionError = 10;
+float maxHeadingError = 30 * DEG_TO_RAD;

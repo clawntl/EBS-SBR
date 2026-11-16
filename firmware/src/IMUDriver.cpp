@@ -14,6 +14,8 @@
 
 float theta_dot[3];  // {yaw, pitch, roll}
 float theta[3];      // {yaw, pitch, roll}
+float imuGyro[3];
+float imuAccel[3];
 
 namespace {
 
@@ -281,6 +283,13 @@ void Task_BMI160(void *pvParams) {
     float aX = convertRawAccel(accel.x);
     float aY = convertRawAccel(accel.y);
     float aZ = convertRawAccel(accel.z);
+
+    imuGyro[0] = convertRawGyro(gyro.x) - X_Offset;
+    imuGyro[1] = convertRawGyro(gyro.y) - Y_Offset;
+    imuGyro[2] = convertRawGyro(gyro.z) - Z_Offset;
+    imuAccel[0] = aX;
+    imuAccel[1] = aY;
+    imuAccel[2] = aZ;
 
     //filter.updateIMU(theta_dot[2], theta_dot[1], theta_dot[0], aZ, -aY, -aX);
 

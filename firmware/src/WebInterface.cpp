@@ -199,6 +199,19 @@ void broadcastTelemetry() {
     doc["cr"] = r3(c.curR);
     doc["jx"] = r2(c.joyX);
     doc["jy"] = r2(c.joyY);
+    doc["perr"] = r3(c.posErr);
+    doc["vref"] = r2(c.speedRef);
+    doc["hdg"] = r2(c.heading);
+    doc["herr"] = r2(c.headErr);
+    doc["yref"] = r2(c.yawRateRef);
+    doc["ycur"] = r3(c.yawCur);
+    doc["pitch"] = r2(c.pitch);
+    doc["gx"] = r2(c.gyro[0]);
+    doc["gy"] = r2(c.gyro[1]);
+    doc["gz"] = r2(c.gyro[2]);
+    doc["ax"] = r3(c.accel[0]);
+    doc["ay"] = r3(c.accel[1]);
+    doc["az"] = r3(c.accel[2]);
     doc["hz"] = loopHz;
 
     doc["batt"] = r2(Battery::voltage());

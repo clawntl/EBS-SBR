@@ -72,11 +72,15 @@ void Task_LQR(void *pvParam) {
   unsigned long lastTime = micros();
   bool imuStalled = false;
 
-  // uint16_t motorKV = 100;
-  // float motorKT = 60 / (2 * PI * motorKV);
-
+  // Wheel angle [rad] and heading [rad], integrated while balancing and
+  // reset each time balancing starts, and their references, which move
+  // with the drive input (speed / turn-rate set points).
   float phi = 0;
   float phi_dot = 0;
+  float phiRef = 0;
+  float speedRef = 0;   // [rad/s] ramped towards the requested speed
+  float psi = 0;
+  float psiRef = 0;
 
   // Loop rate measurement (steps per second).
   uint32_t rateWindowStartMs = millis();
@@ -101,7 +105,7 @@ void Task_LQR(void *pvParam) {
         {
           ControlSample s = getControlSnapshot();
           s.timeUs = micros();
-          s.lqr = s.curL = s.curR = 0;
+          s.lqr = s.curL = s.curR = s.yawCur = 0;
           s.state = BalanceState::ImuStalled;
           publish(s);
         }
@@ -113,76 +117,92 @@ void Task_LQR(void *pvParam) {
         imuStalled = false;
       }
 
-
       unsigned long currentTime = micros();
       float dt = (currentTime - lastTime) / 1e6f;  // Convert to seconds
       lastTime = currentTime;
-
+      if (dt > 0.05f) dt = 0.05f; // e.g. after a flash write stalled us
 
       // Only trust the wheel velocities while both drivers are running FOC:
       // a stopped driver stops sending them, so the last value would go stale.
       const bool motorsOk = motorsReady();
       phi_dot = motorsOk ? ((leftShaftVelocity + rightShaftVelocity) / 2) : 0.0f;
 
-      phi += phi_dot * dt;
+      // Yaw rate [rad/s], positive in the direction a positive differential
+      // current (left wheel forwards, right backwards) turns the robot.
+      const float psi_dot = yawInvert ? -theta_dot[0] : theta_dot[0];
 
+      // Pull in the latest joystick input, but treat it as stale (i.e. zero
+      // it) if WebInterface hasn't refreshed it recently - protects against a
+      // dropped WebSocket leaving the robot driving on a frozen command.
+      float axisX = joystickAxisX;
+      float axisY = joystickAxisY;
+      if (millis() - joystickLastUpdateMs > JOYSTICK_TIMEOUT_MS) {
+        axisX = 0;
+        axisY = 0;
+      }
+      axisX = constrain(axisX, -1.0f, 1.0f);
+      axisY = constrain(axisY, -1.0f, 1.0f);
 
+      // ---- Set points from the drive input -------------------------------
+      // Speed: ramp towards the request at maxWheelAccel. The position
+      // reference moves at that speed, so the position hold (K0) follows the
+      // drive input instead of fighting it, and holds the spot on release.
+      const float speedWanted = axisY * maxWheelSpeed;
+      const float maxStep = maxWheelAccel * dt;
+      speedRef += constrain(speedWanted - speedRef, -maxStep, maxStep);
+      // Turning: the requested yaw rate, and the heading it integrates to.
+      const float yawRateRef = axisX * maxTurnRate;
 
-      //phi = constrain(phi, -2, 2);
+      // Balancing starts (again): hold the spot and heading it starts at.
+      const bool wasBalancing = (previousState == BalanceState::Balancing);
+      if (!wasBalancing) {
+        phi = phiRef = 0;
+        psi = psiRef = 0;
+        speedRef = 0;
+      } else {
+        phi += phi_dot * dt;
+        phiRef += speedRef * dt;
+        psi += psi_dot * dt;
+        psiRef += yawRateRef * dt;
+      }
 
-      // Find the total wheel torque [Nm] required using LQR
-      // X = [x, th, psi_ang, dx, th_dot, psi_dot]
-      // X_prime = [phi, th, psi_ang, phi_dot, th_dot, psi_dot]
+      // Errors for the hold loops, limited: if the robot is pushed or turned
+      // further than the limit, drag the reference along rather than wind up.
+      float posErr = phi - phiRef;
+      if (posErr > maxPositionError)  { phiRef = phi - maxPositionError; posErr = maxPositionError; }
+      if (posErr < -maxPositionError) { phiRef = phi + maxPositionError; posErr = -maxPositionError; }
+      float headErr = psi - psiRef;
+      if (headErr > maxHeadingError)  { psiRef = psi - maxHeadingError; headErr = maxHeadingError; }
+      if (headErr < -maxHeadingError) { psiRef = psi + maxHeadingError; headErr = -maxHeadingError; }
 
-        // K0: Wheel displacement gain
-        // K1: Tilt angle gain
-        // K2: Yaw angle gain
-        // K3: Wheel velocity gain
-        // K4: Tilt velocity gain
-        // K5: Yaw velocity gain
+      // ---- Balance (common-mode) current: LQR on the forward states -------
+      // X = [phi, tilt, psi, phi_dot, tilt_dot, psi_dot]; u = -K X, split into
+      // the part both wheels share (balance + position) and the part they
+      // take with opposite signs (heading).
+      //   K0: wheel position    K1: tilt         K2: heading
+      //   K3: wheel speed       K4: tilt rate    K5: yaw rate
+      const float current_LQR = -(
+          (K[0] * posErr)
+        + (K[1] * (theta[2] - angleSetPoint))
+        + (K[3] * (phi_dot - speedRef))
+        + (K[4] * theta_dot[2])
+      );
 
-    float current_LQR = -(
-    (K[1] * (theta[2] - angleSetPoint))
-    + (K[3] * phi_dot)
-    + (K[4] * theta_dot[2])
-    );
+      // ---- Heading (differential) current ---------------------------------
+      // Feed-forward for the requested turn, plus feedback on the heading and
+      // yaw-rate errors. Positive = left wheel forwards.
+      const float yawCurrentWanted = turnFeedForward * axisX
+                                   - (K[2] * headErr + K[5] * (psi_dot - yawRateRef));
 
-    // Pull in the latest joystick input, but treat it as stale (i.e. zero
-    // it) if WebInterface hasn't refreshed it recently - protects against a
-    // dropped WebSocket leaving the robot driving on a frozen command.
-    float axisX = joystickAxisX;
-    float axisY = joystickAxisY;
-    if (millis() - joystickLastUpdateMs > JOYSTICK_TIMEOUT_MS) {
-      axisX = 0;
-      axisY = 0;
-    }
-    // Work out the indivudual wheel torques [Nm]: the joystick's turn/move
-    // request is added on top of the full balancing current, not blended
-    // against it - attenuating the LQR feedback by joystick magnitude let
-    // large commands starve the balance loop, tip the robot past
-    // deactivationAngle, and cut the motors entirely.
-    float currentLeft = (current_LQR / 2);
-    float currentRight = (current_LQR / 2);
+      // Each wheel is limited to +-1 A. Balance comes first: the turning
+      // current only gets what's left, so a hard turn can't starve the
+      // balance loop and tip the robot over.
+      const float half = constrain(current_LQR / 2, -1.0f, 1.0f);
+      const float yawRoom = 1.0f - fabsf(half);
+      const float yawCurrent = constrain(yawCurrentWanted, -yawRoom, yawRoom);
+      const float currentLeft = half + yawCurrent;
+      const float currentRight = half - yawCurrent;
 
-    currentLeft += turnCurrentGain * axisX;
-    currentLeft += moveCurrentGain * axisY;
-
-    currentRight -= turnCurrentGain * axisX;
-    currentRight += moveCurrentGain * axisY;
-
-      //Serial.print("ang: "); Serial.print(RAD_TO_DEG * theta[2], 3); Serial.print("°");
-      //Serial.print("\t"); Serial.print("sp: "); Serial.print(RAD_TO_DEG * angleSetPoint, 2); Serial.print("°");
-
-      // Serial.print("\tL_RAW: "); Serial.print(currentLeft, 3); Serial.print("A");
-      // Serial.print("\tR_RAW: "); Serial.print(currentRight, 3); Serial.print("A");
-
-                    //Serial.print("\talpha: "); Serial.print(alpha, 4);
-                    // Serial.print("\tIMU: "); Serial.print(IMUsampleRate); Serial.print(" Hz");
-
-      currentLeft = constrain(currentLeft, -1, 1);
-      currentRight = constrain(currentRight, -1, 1);
-
-      //if (!paused && (((theta[1] - angleSetPoint) < (deactivationAngle * DEG_TO_RAD)) && ((theta[1] - angleSetPoint)  > (-deactivationAngle * DEG_TO_RAD)))) {
       const bool upright = ((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD));
       // Don't drive one wheel on its own if the other driver is down.
       const bool batteryOk = !Battery::isLow();
@@ -205,14 +225,34 @@ void Task_LQR(void *pvParam) {
 
       // Live data for the web page, and the recording (if one is running).
       const BalanceState st = balanceState;
-      const ControlSample sample = {
-        currentTime,
-        theta[2] * kRadToDeg, theta_dot[2] * kRadToDeg, angleSetPoint * kRadToDeg,
-        phi, phi_dot, theta_dot[0] * kRadToDeg,
-        motorsOk ? leftShaftVelocity : 0.0f, motorsOk ? rightShaftVelocity : 0.0f,
-        current_LQR, leftTargetCurrent, rightTargetCurrent,
-        axisX, axisY, st,
-      };
+      const bool running = (st == BalanceState::Balancing);
+      ControlSample sample = {};
+      sample.timeUs = currentTime;
+      sample.tilt = theta[2] * kRadToDeg;
+      sample.tiltRate = theta_dot[2] * kRadToDeg;
+      sample.setpoint = angleSetPoint * kRadToDeg;
+      sample.phi = phi;
+      sample.phiDot = phi_dot;
+      sample.yawRate = psi_dot * kRadToDeg;
+      sample.wheelL = motorsOk ? leftShaftVelocity : 0.0f;
+      sample.wheelR = motorsOk ? rightShaftVelocity : 0.0f;
+      sample.lqr = current_LQR;
+      sample.curL = leftTargetCurrent;
+      sample.curR = rightTargetCurrent;
+      sample.joyX = axisX;
+      sample.joyY = axisY;
+      sample.state = st;
+      sample.posErr = running ? posErr : 0.0f;
+      sample.speedRef = running ? speedRef : 0.0f;
+      sample.heading = psi * kRadToDeg;
+      sample.headErr = running ? headErr * kRadToDeg : 0.0f;
+      sample.yawRateRef = yawRateRef * kRadToDeg;
+      sample.yawCur = running ? yawCurrent : 0.0f;
+      sample.pitch = theta[1] * kRadToDeg;
+      for (int i = 0; i < 3; i++) {
+        sample.gyro[i] = imuGyro[i] * kRadToDeg;
+        sample.accel[i] = imuAccel[i];
+      }
       publish(sample);
       Capture::record(sample, previousState);
       previousState = st;
@@ -227,32 +267,5 @@ void Task_LQR(void *pvParam) {
         rateWindowStartMs = nowMs;
       }
 
-      //Serial.print("\t"); Serial.print("L: "); Serial.print(currentLeft, 3); Serial.print("A");
-      //Serial.print("\t"); Serial.print("R: "); Serial.print(currentRight, 3); Serial.print("A");
-
-      //Serial.print("\t"); Serial.print("DA: "); Serial.print(deactivationAngle, 1); Serial.print("°");
-
-
-
-
-                // Serial.print("\tphi_dot: "); Serial.print(phi_dot, 4); Serial.print(" rad/s");
-                // Serial.print("\tphi : "); Serial.print(phi, 4); Serial.print(" rad");
-                // // Work out the current required [A] for the requested left motor torque
-                // //float Iq_Left = torqueLeft / motorKT;
-                // currentLeft = constrain(currentLeft, -1, 1); // Limit the maximum current just to be safe
-
-                // // Work out the current required [A] for the requested right motor torque
-                // //float Iq_Right = torqueRight / motorKT;
-                // currentRight = constrain(currentRight, -1, 1); // Limit the maximum current just to be safe
-
-
-
-
-
-
-    //   Serial.print("\t\tK1: "); Serial.print(K[1], 3);
-    //   Serial.print("\tK3: "); Serial.print(K[3], 3);
-    //   Serial.print("\tK4: "); Serial.print(K[4], 3);
-    //   Serial.println();
   }
 }

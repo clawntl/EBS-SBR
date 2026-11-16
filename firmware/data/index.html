@@ -298,7 +298,12 @@
             <button id="chartPause" class="small">Pause</button></span></h2>
           <div class="chart-wrap"><canvas id="chart"></canvas></div>
           <div class="legend" id="legend"></div>
-          <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to both charts. History covers
+        </div>
+        <div class="panel">
+          <h2>IMU (raw axes)</h2>
+          <div class="chart-wrap short"><canvas id="imuChart"></canvas></div>
+          <div class="legend" id="imuLegend"></div>
+          <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to all the charts. History covers
             the time this page has been open (up to 1 hour); over 1 min, each point is a 1 s average with its min-max range shaded.
             The battery voltage comes from the two motor drivers, which share the pack.</p>
         </div>
@@ -373,8 +378,8 @@
           <p class="muted" id="gamepadNote">No controller detected - press a button on it, then hit Rescan.</p>
           <p class="muted">A gamepad connected to this phone or computer (USB or Bluetooth) drives with its left stick.
             Needs Chrome or Edge: Firefox only allows gamepads on HTTPS pages. The touch joystick takes over while
-            you hold it. How fast it drives and turns is set by <b>Move gain</b> and <b>Turn gain</b> under Driving on
-            the Tune tab.</p>
+            you hold it. The stick asks for a wheel speed and a turn rate (<b>Top speed</b> and <b>Turn rate</b> under
+            Driving on the Tune tab); let go and the robot holds its position and heading, if the hold gains are set.</p>
         </div>
       </div>
     </div>
@@ -683,16 +688,21 @@ function send(obj) {
 const GROUP_HELP = {
   "Balance gains (LQR)":
     "The controller measures the tilt, how fast it's tipping and how fast the wheels turn, many times a second, " +
-    "and sets the total wheel current to -(K1 × tilt from set point + K4 × tilt rate + K3 × wheel speed), split " +
-    "equally between the wheels and limited to ±1 A per wheel. Tune K1 and K4 first (stiffness and damping), " +
-    "then K3. The greyed-out gains aren't used by the controller yet.",
+    "and sets the total wheel current to -(K1 × tilt from set point + K4 × tilt rate + K3 × wheel speed error " +
+    "+ K0 × position error), split equally between the wheels and limited to ±1 A per wheel. Tune K1 and K4 " +
+    "first (stiffness and damping), then K3, then K0 (under Position & heading hold).",
+  "Position & heading hold":
+    "Stops the drift. K0 holds the position (forward/back); K2 and K5 hold the heading using the gyro's yaw " +
+    "axis, by driving the wheels differentially. Both hold where the robot started balancing, moved along by " +
+    "the joystick. Set 'Yaw direction flip' first (see its help), then K5, then K2. Balancing always gets " +
+    "priority: the turning current only gets what's left of each wheel's ±1 A.",
   "Balance":
     "Where 'upright' is, when to give up, and how the tilt angle is measured.",
   "Driving":
-    "How strongly the joystick or gamepad (Control tab) drives the robot. The drive current is added on top of " +
-    "the balancing current.",
+    "What the joystick or gamepad (Control tab) asks for: a wheel speed and a turn rate. The controller leans the " +
+    "robot to reach the speed, and the position hold follows it, so releasing the stick stops and holds the spot.",
   "System":
-    "Battery protection and the live data rate.",
+    "Battery protection, the live data rate and recordings.",
 };
 
 const params = {};        // key -> schema entry + elements
@@ -997,7 +1007,9 @@ function showTelemetry(t) {
 // ---------------------------------------------------------------------
 const hist = (() => {
   const RAW_MS = 60000, BUCKET_MS = 1000, BUCKETS_MS = 3600000;
-  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "batt", "battL", "battR"];
+  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "batt", "battL", "battR",
+                "yaw", "yref", "hdg", "herr", "perr", "vref", "ycur",
+                "pitch", "gx", "gy", "gz", "ax", "ay", "az"];
   let raw = [], buckets = [], cur = null, head = 0;
   let bucketCount = 0; // bumps when a bucket closes
 
@@ -1251,6 +1263,25 @@ charts.make({
     { key: "wheel", label: "Wheel speed (rad/s)",      colour: "#c77dff", on: false },
     { key: "cl",    label: "Left current (A ×10)",     colour: "#f06292", on: false, scale: 10 },
     { key: "cr",    label: "Right current (A ×10)",    colour: "#4dd0e1", on: false, scale: 10 },
+    { key: "vref",  label: "Speed set point (rad/s)",  colour: "#e0c35a", on: false },
+    { key: "perr",  label: "Position error (rad)",     colour: "#a1887f", on: false },
+    { key: "yaw",   label: "Yaw rate (°/s ÷10)",       colour: "#ff6b6b", on: false, scale: 0.1 },
+    { key: "yref",  label: "Turn set point (°/s ÷10)", colour: "#ffb3b3", on: false, scale: 0.1 },
+    { key: "herr",  label: "Heading error (°)",        colour: "#7986cb", on: false },
+    { key: "hdg",   label: "Heading (° ÷10)",          colour: "#9ccc65", on: false, scale: 0.1 },
+    { key: "ycur",  label: "Turn current (A ×10)",     colour: "#ba68c8", on: false, scale: 10 },
+  ],
+});
+charts.make({
+  canvas: "imuChart", legend: "imuLegend", symmetric: true, persist: true,
+  series: [
+    { key: "gx",    label: "Gyro X (°/s)",   colour: "#ff6b6b", on: true },
+    { key: "gy",    label: "Gyro Y (°/s)",   colour: "#3ecf6e", on: false },
+    { key: "gz",    label: "Gyro Z (°/s)",   colour: "#4fa3ff", on: false },
+    { key: "ax",    label: "Accel X (g ×10)", colour: "#ffb3b3", on: false, scale: 10 },
+    { key: "ay",    label: "Accel Y (g ×10)", colour: "#a5e8bd", on: false, scale: 10 },
+    { key: "az",    label: "Accel Z (g ×10)", colour: "#a8d1ff", on: false, scale: 10 },
+    { key: "pitch", label: "Pitch (°)",       colour: "#e0c35a", on: false },
   ],
 });
 charts.make({

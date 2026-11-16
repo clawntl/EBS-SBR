@@ -32,19 +32,6 @@ const ParamDef kParams[] = {
      "robot rolling away at a steady speed; too much fights the balancing and makes it slow and "
      "swaying.",
      [](float v) { K[3] = v; }, 0},
-    {"K0", "Wheel position (K0)", "Balance gains (LQR)", 0.0f, -20.0f, 20.0f, 0.01f, false,
-     "Gain on how far the wheels have rolled. Not used by the controller at the moment (it only "
-     "uses K1, K3 and K4), so changing it has no effect.",
-     [](float v) { K[0] = v; }, PARAM_FLAG_UNUSED},
-    {"K2", "Yaw angle (K2)", "Balance gains (LQR)", 0.0f, -20.0f, 20.0f, 0.01f, false,
-     "Gain on the heading (yaw) angle. Not used by the controller at the moment, so changing it "
-     "has no effect.",
-     [](float v) { K[2] = v; }, PARAM_FLAG_UNUSED},
-    {"K5", "Yaw rate (K5)", "Balance gains (LQR)", 0.0f, -2.0f, 2.0f, 0.001f, false,
-     "Gain on the turning rate. Not used by the controller at the moment, so changing it has no "
-     "effect.",
-     [](float v) { K[5] = v; }, PARAM_FLAG_UNUSED},
-
     // ---- Balance ----------------------------------------------------------------
     {"setpoint", "Angle set point (deg)", "Balance", 2.0f, -20.0f, 20.0f, 0.01f, false,
      "The tilt reading at which the robot is exactly balanced. It isn't 0 because the IMU isn't "
@@ -68,15 +55,58 @@ const ParamDef kParams[] = {
      "(e.g. 300 Hz runs at 333 Hz); the Tune tab shows the real loop rate.",
      [](float v) { IMUsampleRate = (uint16_t)lroundf(v); }, 0},
 
+    // ---- Position & heading hold ---------------------------------------------------
+    {"K0", "Wheel position (K0)", "Position & heading hold", 0.0f, -2.0f, 2.0f, 0.001f, false,
+     "Holds the robot's position: current per radian of wheel rotation away from where it should "
+     "be (where it started balancing, moved along by the drive input). Same sign as K3. 0 = off "
+     "(it then only resists speed, so it creeps). Start small (e.g. -0.005) and increase until it "
+     "returns to its spot after a nudge without a slow sway; too much makes it rock back and "
+     "forth.",
+     [](float v) { K[0] = v; }, 0},
+    {"K2", "Heading (K2)", "Position & heading hold", 0.0f, -2.0f, 2.0f, 0.01f, false,
+     "Holds the heading: differential current [A] per radian the robot has turned away from the "
+     "heading it should have. Stops the slow spin from left/right motor differences. Needs 'Yaw "
+     "direction' set correctly first; positive values hold, negative ones push it further round. "
+     "0 = off. Start around 0.05.",
+     [](float v) { K[2] = v; }, 0},
+    {"K5", "Turn rate (K5)", "Position & heading hold", 0.0f, -1.0f, 1.0f, 0.001f, false,
+     "Damps turning: differential current [A] per rad/s of yaw rate away from the requested turn "
+     "rate. Positive damps; too much buzzes or wobbles in yaw. 0 = off. Start around 0.02, then "
+     "add K2.",
+     [](float v) { K[5] = v; }, 0},
+    {"yawInvert", "Yaw direction flip (0/1)", "Position & heading hold", 0.0f, 0.0f, 1.0f, 1.0f, false,
+     "Matches the gyro's yaw sign to the wheels. Check it with K2 and K5 at 0: turn right with "
+     "the joystick and watch 'Yaw rate' on the chart. It should go positive; if it goes negative "
+     "set this to 1. With it wrong the heading hold makes the robot spin.",
+     [](float v) { yawInvert = v > 0.5f; }, 0},
+    {"maxPosErr", "Max position error (rad)", "Position & heading hold", 10.0f, 0.5f, 100.0f, 0.5f, false,
+     "The most wheel rotation (rad) the position hold acts on. If the robot is pushed further than "
+     "this the target moves with it, so it doesn't run back hard. One wheel revolution is 6.28 "
+     "rad.",
+     [](float v) { maxPositionError = v; }, 0},
+    {"maxHeadErr", "Max heading error (deg)", "Position & heading hold", 30.0f, 1.0f, 180.0f, 1.0f, false,
+     "The most heading error the heading hold acts on. Turn the robot further than this by hand "
+     "and the target heading turns with it.",
+     [](float v) { maxHeadingError = v * DEG_TO_RAD; }, 0},
+
     // ---- Driving ------------------------------------------------------------------
-    {"moveGain", "Move gain (A)", "Driving", 0.3f, 0.0f, 1.0f, 0.01f, false,
-     "Extra current on both wheels for full forward/back on the joystick, added on top of the "
-     "balancing current. Too much can tip it past the cut-out angle.",
-     [](float v) { moveCurrentGain = v; }, 0},
-    {"turnGain", "Turn gain (A)", "Driving", 0.15f, 0.0f, 1.0f, 0.01f, false,
-     "Extra current for full left/right on the joystick: added to one wheel and taken from the "
-     "other.",
-     [](float v) { turnCurrentGain = v; }, 0},
+    {"maxSpeed", "Top speed (wheel rad/s)", "Driving", 10.0f, 0.0f, 40.0f, 0.5f, false,
+     "Wheel speed requested at full forward/back on the joystick or gamepad. The controller leans "
+     "the robot to reach it, so too much can tip it past the cut-out angle.",
+     [](float v) { maxWheelSpeed = v; }, 0},
+    {"maxAccel", "Acceleration (wheel rad/s²)", "Driving", 20.0f, 1.0f, 200.0f, 1.0f, false,
+     "How quickly the requested speed may change. Lower is gentler starts and stops; very high "
+     "makes it lurch (it has to roll backwards briefly to lean into a start).",
+     [](float v) { maxWheelAccel = v; }, 0},
+    {"maxTurn", "Turn rate (deg/s)", "Driving", 90.0f, 0.0f, 360.0f, 5.0f, false,
+     "Turn rate requested at full left/right.",
+     [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},
+    {"turnGain", "Turn feed-forward (A)", "Driving", 0.15f, 0.0f, 1.0f, 0.01f, false,
+     "Differential current added straight away at full left/right (taken from one wheel, added "
+     "to the other), so turns start without waiting for the turn-rate error to build. The "
+     "heading-hold gains (K2, K5) then correct it to the requested rate. With K2 and K5 at 0 this "
+     "is the only turning current, as before.",
+     [](float v) { turnFeedForward = v; }, 0},
 
     // ---- System ---------------------------------------------------------------------
     {"battCutoff", "Battery cutoff (V, 0 = off)", "System", 9.6f, 0.0f, 12.6f, 0.1f, false,
@@ -84,6 +114,11 @@ const ParamDef kParams[] = {
      "5 s) the robot stops balancing to protect the 3S Li-ion pack. It's allowed again once the "
      "voltage has recovered to 0.3 V above the cutoff. 9.6 V is 3.2 V per cell. 0 disables the "
      "cutoff.",
+     [](float) {}, 0},
+    {"recEvery", "Record every Nth step", "System", 1.0f, 1.0f, 20.0f, 1.0f, false,
+     "Recordings normally keep every control step (up to about 60 s at 500 Hz, 30 s at 1000 Hz). "
+     "2 keeps every other step and doubles the longest recording, and so on. Applies to the next "
+     "recording.",
      [](float) {}, 0},
     {"telemetryMs", "Telemetry period (ms)", "System", 50.0f, 20.0f, 1000.0f, 10.0f, false,
      "How often live data is sent to this page. For a detailed log of every control step use "

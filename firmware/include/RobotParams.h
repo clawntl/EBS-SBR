@@ -24,7 +24,18 @@ extern uint16_t IMUsampleRate;
 
 extern bool paused;
 
-// Joystick drive gains: how much current [A] full joystick deflection adds
-// on top of the balancing current.
-extern float turnCurrentGain;
-extern float moveCurrentGain;
+// Driving. The drive inputs (web joystick / gamepad, later other sources)
+// are -1..1 and are turned into SETPOINTS for the balance controller rather
+// than extra current: a wheel-speed set point (forward/back) and a yaw-rate
+// set point (turning). The controller then holds position and heading when
+// the input is released (see LQRControl.cpp).
+extern float maxWheelSpeed;  // [rad/s] wheel speed at full forward/back
+extern float maxWheelAccel;  // [rad/s^2] how fast the speed set point may change
+extern float maxTurnRate;    // [rad/s] yaw rate at full left/right
+extern float turnFeedForward; // [A] differential current at full turn (feed-forward)
+extern bool  yawInvert;      // flip the gyro's yaw sign to match the wheels
+// Limits on the position / heading error the hold loops act on. Beyond
+// them the reference is dragged along, so a robot that's pushed or turned
+// by hand doesn't wind up and lunge back.
+extern float maxPositionError; // [rad] of wheel rotation
+extern float maxHeadingError;  // [rad]

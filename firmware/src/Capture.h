@@ -10,7 +10,9 @@
 // starts with the settings that were active, so one file is enough to see
 // what happened and why.
 //
-// The buffer (~1 MB) is allocated in PSRAM on the first recording.
+// The buffer (up to ~1.6 MB) is allocated in PSRAM on the first recording,
+// sized to what's free. The "recEvery" setting records every Nth step for
+// longer recordings.
 //
 // record() is called by Task_LQR; everything else from core 0.
 namespace Capture {
@@ -36,7 +38,7 @@ void cancel();
 State state();
 uint32_t samples();    // recorded so far
 uint32_t capacity();   // for the current capture
-float rateHz();        // nominal sample rate of the current capture (control rate)
+float rateHz();        // nominal sample rate of the current capture (control rate / recEvery)
 
 // Task_LQR: call once per control step.
 void record(const ControlSample &s, BalanceState previousState);
