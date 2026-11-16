@@ -120,6 +120,7 @@
   .legend label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   .swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
   .swatch.shade { height: 10px; background: rgba(79,163,255,0.25); }
+  .swatch.shade-rec { height: 10px; background: rgba(255,107,107,0.30); }
   .legend > span { display: flex; align-items: center; gap: 5px; }
   .chart-wrap.short { height: 120px; }
 
@@ -197,7 +198,7 @@
   /* Control: joystick */
   .joystick-wrap { display: flex; justify-content: center; padding: 8px 0 4px; }
   .joystick-pad {
-    position: relative; width: min(300px, 80vw); aspect-ratio: 1; border-radius: 50%;
+    position: relative; width: min(100%, 460px); aspect-ratio: 1; border-radius: 50%;
     background: #0e1013; border: 1px solid var(--border); touch-action: none; user-select: none;
     -webkit-user-select: none;
   }
@@ -291,18 +292,19 @@
         <div class="panel">
           <h2>Battery <span class="muted" id="battChartNow"></span></h2>
           <div class="chart-wrap short"><canvas id="battChart"></canvas></div>
-          <div class="legend" id="battLegend"><span><span class="swatch shade"></span> Balancing</span></div>
+          <div class="legend" id="battLegend"><span><span class="swatch shade"></span> Balancing</span>
+            <span><span class="swatch shade-rec"></span> Recorded</span></div>
         </div>
         <div class="panel">
           <h2>Chart <span><select id="chartSpan" class="inline" aria-label="Time span"></select>
             <button id="chartPause" class="small">Pause</button></span></h2>
           <div class="chart-wrap"><canvas id="chart"></canvas></div>
-          <div class="legend" id="legend"></div>
+          <div class="legend" id="legend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
         </div>
         <div class="panel">
           <h2>IMU (raw axes)</h2>
           <div class="chart-wrap short"><canvas id="imuChart"></canvas></div>
-          <div class="legend" id="imuLegend"></div>
+          <div class="legend" id="imuLegend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
           <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to all the charts. History covers
             the time this page has been open (up to 1 hour); over 1 min, each point is a 1 s average with its min-max range shaded.
             The battery voltage comes from the two motor drivers, which share the pack.</p>
@@ -1014,7 +1016,7 @@ const hist = (() => {
   let bucketCount = 0; // bumps when a bucket closes
 
   function newBucket(bt) {
-    const b = { t: bt, min: {}, max: {}, sum: {}, cnt: {}, n: 0, runN: 0 };
+    const b = { t: bt, min: {}, max: {}, sum: {}, cnt: {}, n: 0, runN: 0, recN: 0 };
     for (const k of keys) { b.min[k] = Infinity; b.max[k] = -Infinity; b.sum[k] = 0; b.cnt[k] = 0; }
     return b;
   }
@@ -1022,12 +1024,13 @@ const hist = (() => {
   function push(t) {
     if (raw.length && t.t < raw[raw.length - 1].t) { raw = []; buckets = []; cur = null; head = 0; } // rebooted
     const run = t.state === "balancing";
+    const rec = !!t.cap && t.cap.state === "recording";
     const v = {};
     for (const k of keys) v[k] = Number.isFinite(t[k]) ? t[k] : NaN;
     if (!t.battKnown) v.batt = NaN;
     if (!(t.battL > 0)) v.battL = NaN;
     if (!(t.battR > 0)) v.battR = NaN;
-    raw.push({ t: t.t, v, run });
+    raw.push({ t: t.t, v, run, rec });
     // Drop old frames in batches (shift() on every frame is O(n)).
     while (head < raw.length && raw[head].t < t.t - RAW_MS) head++;
     if (head > 500) { raw = raw.slice(head); head = 0; }
@@ -1051,6 +1054,7 @@ const hist = (() => {
     }
     cur.n++;
     if (run) cur.runN++;
+    if (rec) cur.recN++;
   }
 
   // Points covering the last spanMs before endT: { t, v, min, max, run }.
@@ -1059,7 +1063,7 @@ const hist = (() => {
     if (spanMs <= RAW_MS) {
       for (let i = head; i < raw.length; i++) {
         const p = raw[i];
-        if (p.t >= from && p.t <= endT) out.push({ t: p.t, v: p.v, min: p.v, max: p.v, run: p.run });
+        if (p.t >= from && p.t <= endT) out.push({ t: p.t, v: p.v, min: p.v, max: p.v, run: p.run, rec: p.rec });
       }
       return { points: out, bucketed: false };
     }
@@ -1072,7 +1076,7 @@ const hist = (() => {
         min[k] = c ? b.min[k] : NaN;
         max[k] = c ? b.max[k] : NaN;
       }
-      out.push({ t: b.t + BUCKET_MS / 2, v: mean, min, max, run: b.runN * 2 > b.n });
+      out.push({ t: b.t + BUCKET_MS / 2, v: mean, min, max, run: b.runN * 2 > b.n, rec: b.recN > 0 });
     }
     return { points: out, bucketed: true };
   }
@@ -1114,7 +1118,8 @@ const charts = (() => {
   function spanLabel() { return SPANS.find(([ms]) => ms === spanMs)[1]; }
 
   // opts: canvas, legend, series [{key,label,colour,on,scale}], symmetric,
-  //       minRange, unit, decimals, shadeRun, prepend (legend before existing items)
+  //       minRange, unit, decimals, shadeRun (balancing), prepend (legend before existing items).
+  //       Recorded spans (a recording running) are always shaded.
   function make(opts) {
     const canvas = $(opts.canvas), ctx = canvas.getContext("2d");
     if (opts.legend) {
@@ -1182,16 +1187,18 @@ const charts = (() => {
       const x = (t) => ((t - tStart) / spanMs) * w;
       const y = (v) => 4 + (hi - v) / (hi - lo) * (h - 8);
 
-      // Balancing shading.
-      if (opts.shadeRun) {
-        ctx.fillStyle = "rgba(79,163,255,0.10)";
-        let runFrom = null;
+      // Shaded spans: balancing (battery chart) and recorded (all charts).
+      function shade(flag, colour) {
+        ctx.fillStyle = colour;
+        let from = null;
         points.forEach((p, i) => {
-          if (p.run && runFrom === null) runFrom = p.t;
+          if (p[flag] && from === null) from = p.t;
           const last = i === points.length - 1;
-          if (runFrom !== null && (!p.run || last)) { ctx.fillRect(x(runFrom), 0, x(p.t) - x(runFrom), h); runFrom = null; }
+          if (from !== null && (!p[flag] || last)) { ctx.fillRect(x(from), 0, x(p.t) - x(from), h); from = null; }
         });
       }
+      if (opts.shadeRun) shade("run", "rgba(79,163,255,0.10)");
+      shade("rec", "rgba(255,107,107,0.13)");
 
       // Grid: zero line (symmetric charts) and 10 time divisions.
       ctx.strokeStyle = "#2c3038";

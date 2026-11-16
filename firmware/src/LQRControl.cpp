@@ -147,7 +147,10 @@ void Task_LQR(void *pvParam) {
       // Speed: ramp towards the request at maxWheelAccel. The position
       // reference moves at that speed, so the position hold (K0) follows the
       // drive input instead of fighting it, and holds the spot on release.
-      const float speedWanted = axisY * maxWheelSpeed;
+      // The drive input is +1 = forward, but the drivers report a NEGATIVE
+      // wheel speed when the robot rolls forward (phi, phi_dot, K0 and K3
+      // all use the drivers' sign), hence the minus.
+      const float speedWanted = -axisY * maxWheelSpeed;
       const float maxStep = maxWheelAccel * dt;
       speedRef += constrain(speedWanted - speedRef, -maxStep, maxStep);
       // Turning: the requested yaw rate, and the heading it integrates to.

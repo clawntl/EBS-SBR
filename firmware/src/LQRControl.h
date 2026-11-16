@@ -12,7 +12,7 @@ extern float rightTargetCurrent;
 // hasn't been refreshed within JOYSTICK_TIMEOUT_MS, so a dropped connection
 // can't leave the robot driving blind.
 extern volatile float joystickAxisX; // turn rate set point, x maxTurnRate
-extern volatile float joystickAxisY; // wheel speed set point, x maxWheelSpeed
+extern volatile float joystickAxisY; // +1 = full forward (wheel speed set point, x maxWheelSpeed)
 extern volatile unsigned long joystickLastUpdateMs;
 
 // What Task_LQR is currently doing (for the display).
@@ -36,7 +36,7 @@ struct ControlSample {
     float tiltRate;       // [deg/s]
     float setpoint;       // [deg] angleSetPoint
     float phi;            // [rad] wheel angle, integrated from phiDot
-    float phiDot;         // [rad/s] average of both wheels' speed
+    float phiDot;         // [rad/s] average of both wheels' speed (negative = rolling forward)
     float yawRate;        // [deg/s] positive = the way a positive yawCur turns it
     float wheelL, wheelR; // [rad/s] as reported by the drivers
     float lqr;            // [A] total balancing current from the LQR (before split/joystick/gating)
