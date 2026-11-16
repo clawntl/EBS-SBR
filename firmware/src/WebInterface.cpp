@@ -7,6 +7,7 @@
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 
 #include "LQRControl.h"
 #include "RobotParams.h"
@@ -23,8 +24,13 @@ namespace {
 
 // The robot hosts its own access point so a phone/laptop can connect to it
 // directly without needing an existing WiFi network nearby.
-const char *AP_SSID = "BalanceBot";
-const char *AP_PASSWORD = "balancebot"; // nullptr/"" = open; otherwise >= 8 chars
+// Each robot gets a unique SSID/password from its soft-AP MAC so several can
+// run side by side, e.g. SSID "BalanceBot-3f2a1c", password "balancebot-3f2a1c".
+// The suffix is the last MAC_SUFFIX_BYTES bytes (the first 3 are Espressif's
+// OUI and identical on every board). Password must be >= 8 chars.
+const char *AP_SSID_PREFIX = "BalanceBot-";
+const char *AP_PASSWORD_PREFIX = "balancebot-";
+constexpr size_t MAC_SUFFIX_BYTES = 3; // 1..6
 const IPAddress AP_IP(192, 168, 4, 1);
 const IPAddress AP_MASK(255, 255, 255, 0);
 constexpr uint16_t DNS_PORT = 53;
@@ -38,6 +44,8 @@ DNSServer dnsServer;
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 
+String apSsid;     // "BalanceBot-3f2a1c"
+String apPassword; // "balancebot-3f2a1c"
 String apIpStr;   // "192.168.4.1"
 String portalUrl; // "http://192.168.4.1/"
 uint32_t lastHeartbeatMs = 0;
@@ -169,8 +177,19 @@ void initWebInterface() {
         Serial.println("[fs] /index.html missing - run Upload Filesystem Image");
     }
 
+    // Soft-AP MAC is what phones see as the BSSID; readable from eFuse before
+    // the WiFi driver starts, so the name is fixed for the life of the chip.
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    char suffix[13] = {0};
+    for (size_t i = 6 - MAC_SUFFIX_BYTES; i < 6; i++) {
+        snprintf(suffix + 2 * (i - (6 - MAC_SUFFIX_BYTES)), 3, "%02x", mac[i]);
+    }
+    apSsid = String(AP_SSID_PREFIX) + suffix;
+    apPassword = String(AP_PASSWORD_PREFIX) + suffix;
+
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, (AP_PASSWORD && *AP_PASSWORD) ? AP_PASSWORD : nullptr);
+    WiFi.softAP(apSsid.c_str(), apPassword.c_str());
     delay(100); // let the AP interface come up before reconfiguring it
     // Gateway = our IP, so DHCP clients use us as router *and* DNS server.
     WiFi.softAPConfig(AP_IP, AP_IP, AP_MASK);
@@ -178,7 +197,10 @@ void initWebInterface() {
 
     apIpStr = WiFi.softAPIP().toString();
     portalUrl = "http://" + apIpStr + "/";
-    Serial.printf("[wifi] AP \"%s\" up at %s\n", AP_SSID, apIpStr.c_str());
+    Serial.printf("[wifi] AP \"%s\" (password \"%s\") up at %s\n", apSsid.c_str(),
+                  apPassword.c_str(), apIpStr.c_str());
+    // Paste this into any QR generator to make a scan-to-join code.
+    Serial.printf("[wifi] QR: WIFI:T:WPA;S:%s;P:%s;;\n", apSsid.c_str(), apPassword.c_str());
 
     // Wildcard DNS: every name resolves to us. NoError (not NXDOMAIN) keeps
     // clients from treating lookups as failures.
