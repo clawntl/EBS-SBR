@@ -211,7 +211,7 @@
     background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; z-index: 1;
   }
   .joystick-pad.disabled .joystick-nub { background: var(--muted); }
-  .control-row { display: grid; grid-template-columns: minmax(320px, 1.2fr) 1fr; gap: 0 16px; }
+  .control-row { display: grid; grid-template-columns: 1fr minmax(320px, 1.2fr); gap: 0 16px; align-items: start; }
   @media (max-width: 900px) { .control-row { grid-template-columns: 1fr; } }
   .gp-row { display: flex; gap: 10px; align-items: center; }
   .gp-row select { flex: 1; min-width: 0; }
@@ -346,23 +346,23 @@
   <section class="tabpage" id="tab-control" hidden>
     <div class="control-row">
       <div class="panel">
-        <h2>Drive <span class="muted" id="joyReadout"></span></h2>
-        <div class="joystick-wrap">
-          <div class="joystick-pad" id="joystickPad"><div class="joystick-nub" id="joystickNub"></div></div>
+        <h2>Status</h2>
+        <div class="tiles">
+          <div class="tile"><div class="k">State</div><div class="v" id="cState">-</div></div>
+          <div class="tile"><div class="k">Battery</div><div class="v" id="cBatt">-</div></div>
+          <div class="tile"><div class="k">Tilt from set point</div><div class="v" id="cDev">-</div></div>
+          <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
         </div>
-        <p class="muted" style="text-align:center">Drag to drive: up/down moves, left/right turns. It stops as soon as
-          you let go (or if this page loses its connection).</p>
+        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
       </div>
       <div>
         <div class="panel">
-          <h2>Status</h2>
-          <div class="tiles">
-            <div class="tile"><div class="k">State</div><div class="v" id="cState">-</div></div>
-            <div class="tile"><div class="k">Battery</div><div class="v" id="cBatt">-</div></div>
-            <div class="tile"><div class="k">Tilt from set point</div><div class="v" id="cDev">-</div></div>
-            <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
+          <h2>Drive <span class="muted" id="joyReadout"></span></h2>
+          <div class="joystick-wrap">
+            <div class="joystick-pad" id="joystickPad"><div class="joystick-nub" id="joystickNub"></div></div>
           </div>
-          <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
+          <p class="muted" style="text-align:center">Drag to drive: up/down moves, left/right turns. It stops as soon as
+            you let go (or if this page loses its connection).</p>
         </div>
         <div class="panel">
           <h2>Controller input</h2>
