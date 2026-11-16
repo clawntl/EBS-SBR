@@ -5,8 +5,10 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+#include "Battery.h"
 #include "CANConfig.h"
 #include "CanBus.h"
+#include "DeviceLog.h"
 #include "IMUDriver.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
@@ -34,6 +36,7 @@ const char *balanceName(BalanceState s) {
         case BalanceState::Tipped:         return "TIPPED";
         case BalanceState::MotorsNotReady: return "MOTORS OFF";
         case BalanceState::ImuStalled:     return "IMU STALL";
+        case BalanceState::BatteryLow:     return "BATT LOW";
     }
     return "?";
 }
@@ -50,6 +53,7 @@ bool drawProblems() {
 
     if (!canBusOk) add("CAN init failed");
     if (balanceState == BalanceState::ImuStalled) add("IMU stalled - 0 A");
+    if (Battery::isLow()) add("Battery low %.2fV", Battery::voltage());
 
     for (int s = 0; s < 2; s++) {
         const MotorDriverInfo &m = info[s];
@@ -134,17 +138,17 @@ bool initDisplay() {
         if (i2cProbe(a)) { addr = a; break; }
     }
     if (addr == 0) {
-        Serial.println("OLED not found on I2C - continuing without display");
+        DeviceLog::println("[oled] not found on I2C - continuing without display");
         Wire.end(); // nothing else is on this bus; release the pins and driver
         return false;
     }
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, addr)) {
-        Serial.println("OLED init failed (out of memory) - continuing without display");
+        DeviceLog::println("[oled] init failed (out of memory) - continuing without display");
         Wire.end();
         return false;
     }
-    Serial.printf("OLED found at 0x%02X\n", addr);
+    DeviceLog::printf("[oled] found at 0x%02X\n", addr);
     displayOk = true;
     display.cp437(true); // so DEGREE maps to the degree sign
     display.setTextColor(SSD1306_WHITE);

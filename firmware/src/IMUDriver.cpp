@@ -7,6 +7,7 @@
 #include "bmi160.h"
 #include "bmi160_defs.h"
 
+#include "DeviceLog.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
 #include "StatusLED.h"
@@ -168,6 +169,9 @@ void zeroIMU() {
   Serial.print("SUM Z: ");Serial.print(sum_Z);
   Serial.print("\tOffset Z: "); Serial.print(Z_Offset * RAD_TO_DEG); Serial.println(" °/s");
 
+  DeviceLog::printf("[imu] gyro offsets X %.2f, Y %.2f, Z %.2f deg/s\n",
+                    X_Offset * RAD_TO_DEG, Y_Offset * RAD_TO_DEG, Z_Offset * RAD_TO_DEG);
+
   Serial.print("SUM Pitch: ");Serial.print(sumPitch);
   Serial.print("\tOffset Z: "); Serial.print(pitchOffset * RAD_TO_DEG); Serial.println(" °/s");
 }
@@ -209,7 +213,7 @@ void initIMU() {
   // Set the configuration
   rslt = bmi160_set_sens_conf(&bmi);
 
-  Serial.println("Starting to zero.....");
+  DeviceLog::printf("[imu] BMI160 init %s - zeroing the gyro, keep the robot still\n", rslt == BMI160_OK ? "OK" : "FAILED");
   //delay(2000);
 
   flashStatusLED(RGBColour{246, 20, 247}, 3, 150, 850); // 3 Purple Flashes

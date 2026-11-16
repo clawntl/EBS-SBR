@@ -42,7 +42,9 @@ enum CAN_CMD : uint8_t {
     CMD_SHAFT_VELOCITY = 0x02,
 
     // Driver -> host heartbeat, every 100 ms (not sent while a driver is
-    // blocked in its FOC start): [0x03][DriverState][DRIVER_FLAG_* bits][0][0]
+    // blocked in its FOC start):
+    // [0x03][DriverState][DRIVER_FLAG_* bits][supply mV, uint16 big-endian]
+    // Supply mV = 0 means none (older driver firmware sends 0 there).
     CMD_DRIVER_STATUS = 0x03,
 
     // Host -> driver: [0x10]. Driver -> host reply once the start has

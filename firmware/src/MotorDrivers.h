@@ -28,15 +28,21 @@ struct MotorDriverInfo {
     uint8_t   lastError;     // DriverError code, 0 = none
     uint32_t  lastErrorAgeMs;
     uint8_t   startAttempts;
+    float     supplyVolts;   // from the heartbeat, 0 = not reported
 };
 
 // Called by the CAN receive task for every status/reply/error frame.
-void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags);
+// supplyMv: the driver's supply voltage from heartbeat bytes 3-4 (0 = none).
+void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags, uint16_t supplyMv);
 void handleDriverStartReply(MotorSide side, bool ok);
 void handleDriverError(MotorSide side, uint8_t code);
 
 // Snapshot of one driver's status, for the display/serial output.
 MotorDriverInfo getMotorDriverInfo(MotorSide side);
+
+// A driver's latest supply voltage [V], or 0 if it hasn't reported one in the
+// last maxAgeMs (offline, or firmware without the voltage field).
+float getDriverSupplyVoltage(MotorSide side, uint32_t maxAgeMs);
 
 // True when both drivers are running FOC with no gate-driver fault, i.e. the
 // motors will actually act on the current commands.

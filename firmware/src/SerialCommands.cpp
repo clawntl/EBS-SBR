@@ -5,6 +5,9 @@
 #include "RobotParams.h"
 #include "CANConfig.h"
 #include "MotorDrivers.h"
+#include "Settings.h"
+
+#include <strings.h>
 
 namespace {
 char serialBuff[32];
@@ -50,36 +53,41 @@ void processSerialCommands() {
         //     //sendFloat(CMD_TARGET_CURRENT, rightTargetCurrent, RIGHT_MOTOR_CAN_ADDR);
         // }
 
-        if (!strcmp(outArray[0], "SP")) {
-            angleSetPoint = atof(outArray[1]) * DEG_TO_RAD;
-            Serial.println(angleSetPoint);
+        // Tuning goes through Settings, so the web page stays in sync and
+        // the values can be saved. Short names kept from the old commands.
+        static const struct { const char *cmd; const char *key; } kAliases[] = {
+            {"SP", "setpoint"}, {"DA", "deactAngle"}, {"CA", "alpha"},
+            {"K0", "K0"}, {"K1", "K1"}, {"K2", "K2"}, {"K3", "K3"}, {"K4", "K4"}, {"K5", "K5"},
+        };
+        const char *settingKey = nullptr;
+        for (const auto &a : kAliases) {
+            if (!strcasecmp(outArray[0], a.cmd)) settingKey = a.key;
+        }
+        // SET <key> <value>: any setting by its key (LIST shows them)
+        if (!strcasecmp(outArray[0], "SET") && outArrayLength >= 3) {
+            settingKey = outArray[1];
+            outArray[1] = outArray[2];
         }
 
-        else if (!strcmp(outArray[0], "DA")) {
-            deactivationAngle = atof(outArray[1]);
-            Serial.println(deactivationAngle);
+        if (settingKey) {
+            if (outArrayLength < 2) {
+                Serial.printf("%s = %g\n", settingKey, Settings::value(settingKey));
+            } else {
+                float applied;
+                if (Settings::set(settingKey, atof(outArray[1]), &applied)) Serial.printf("%s = %g\n", settingKey, applied);
+                else Serial.printf("Unknown setting %s\n", settingKey);
+            }
         }
 
-        else if (!strcmp(outArray[0], "K0")) {
-            K[0] = atof(outArray[1]);
-            Serial.println(K[0]);
-        }
-        else if (!strcmp(outArray[0], "K1")) {
-            K[1] = atof(outArray[1]);
-            Serial.println(K[1]);
-        }
-        else if (!strcmp(outArray[0], "K3")) {
-            K[3] = atof(outArray[1]);
-            Serial.println(K[3]);
-        }
-        else if (!strcmp(outArray[0], "K4")) {
-            K[4] = atof(outArray[1]);
-            Serial.println(K[4]);
+        else if (!strcasecmp(outArray[0], "LIST")) {
+            size_t n;
+            const ParamDef *defs = Settings::params(n);
+            for (size_t i = 0; i < n; i++) Serial.printf("  %-12s %10g   %s\n", defs[i].key, Settings::valueAt(i), defs[i].label);
+            Serial.println(Settings::isDirty() ? "(unsaved changes - SAVE to keep them)" : "(all saved)");
         }
 
-        else if (!strcmp(outArray[0], "CA")) {
-            alpha = atof(outArray[1]);
-            Serial.println(alpha);
+        else if (!strcasecmp(outArray[0], "SAVE")) {
+            Serial.println(Settings::save() ? "Saved to flash" : "Save failed");
         }
 
         // Motor driver status

@@ -21,9 +21,32 @@ enum class BalanceState : uint8_t {
     ImuStalled,     // no IMU sample for IMU_SAMPLE_TIMEOUT_MS -> 0 A
     Paused,         // `paused` set from the web page -> 0 A
     Tipped,         // tilt beyond deactivationAngle -> 0 A
+    BatteryLow,     // battery below the cutoff (Battery::isLow()) -> 0 A
     Balancing,
 };
 extern volatile BalanceState balanceState;
+
+const char *balanceStateName(BalanceState s); // "balancing", "tipped", ...
+
+// One control step, as computed by Task_LQR. Used for the web page's live
+// data (getControlSnapshot) and for recordings (Capture).
+struct ControlSample {
+    uint32_t timeUs;      // micros() at the step
+    float tilt;           // [deg] theta[2] (0 = upright by the IMU)
+    float tiltRate;       // [deg/s]
+    float setpoint;       // [deg] angleSetPoint
+    float phi;            // [rad] wheel angle, integrated from phiDot
+    float phiDot;         // [rad/s] average of both wheels' speed
+    float yawRate;        // [deg/s]
+    float wheelL, wheelR; // [rad/s] as reported by the drivers
+    float lqr;            // [A] total balancing current from the LQR (before split/joystick/gating)
+    float curL, curR;     // [A] currents actually sent
+    float joyX, joyY;     // joystick input actually used (-1..1, 0 if stale)
+    BalanceState state;
+};
+
+// Latest step plus the measured control loop rate [Hz].
+ControlSample getControlSnapshot(uint16_t *loopHz = nullptr);
 
 // Runs once per IMU sample (woken by Task_BMI160), computes the wheel
 // currents and sends them over CAN immediately.

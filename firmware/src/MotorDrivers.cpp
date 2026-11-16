@@ -4,6 +4,7 @@
 
 #include "CANConfig.h"
 #include "CanBus.h"
+#include "DeviceLog.h"
 
 namespace {
 
@@ -28,6 +29,11 @@ struct DriverTrack {
 
     volatile uint8_t  lastError = 0;
     volatile uint32_t lastErrorMs = 0;
+
+    volatile uint16_t supplyMv = 0;
+    volatile uint32_t supplyMs = 0;
+
+    MotorLink loggedLink = MotorLink::Offline; // for logging link changes
 };
 
 DriverTrack drivers[2];
@@ -55,11 +61,16 @@ MotorLink linkOf(const DriverTrack &d, uint32_t now) {
 
 } // namespace
 
-void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags) {
+void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags, uint16_t supplyMv) {
     DriverTrack &d = drivers[side];
+    const uint32_t now = millis();
     d.state = state;
     d.flags = flags;
-    d.lastHeartbeatMs = millis();
+    d.lastHeartbeatMs = now;
+    if (supplyMv) {
+        d.supplyMv = supplyMv;
+        d.supplyMs = now;
+    }
     d.everSeen = true;
     if (state == DRIVER_STATE_RUNNING) {
         // Covers a missed start reply.
@@ -74,14 +85,14 @@ void handleDriverStartReply(MotorSide side, bool ok) {
     d.startPending = false;
     d.lastStartFailed = !ok;
     if (ok) d.startAttempts = 0;
-    Serial.printf("%s motor driver: FOC start %s\n", kSideName[side], ok ? "OK" : "FAILED");
+    DeviceLog::printf("[motor] %s driver: FOC start %s\n", kSideName[side], ok ? "OK" : "FAILED");
 }
 
 void handleDriverError(MotorSide side, uint8_t code) {
     DriverTrack &d = drivers[side];
     d.lastError = code;
     d.lastErrorMs = millis();
-    Serial.printf("%s motor driver error %u: %s\n", kSideName[side], code, driverErrorName(code));
+    DeviceLog::printf("[motor] %s driver error %u: %s\n", kSideName[side], code, driverErrorName(code));
 }
 
 MotorDriverInfo getMotorDriverInfo(MotorSide side) {
@@ -93,7 +104,15 @@ MotorDriverInfo getMotorDriverInfo(MotorSide side) {
     info.lastError = d.lastError;
     info.lastErrorAgeMs = d.lastError ? (now - d.lastErrorMs) : 0;
     info.startAttempts = d.startAttempts;
+    info.supplyVolts = getDriverSupplyVoltage(side, 1000);
     return info;
+}
+
+float getDriverSupplyVoltage(MotorSide side, uint32_t maxAgeMs) {
+    const DriverTrack &d = drivers[side];
+    const uint32_t mv = d.supplyMv, at = d.supplyMs;
+    if (!mv || millis() - at > maxAgeMs) return 0.0f;
+    return mv / 1000.0f;
 }
 
 bool motorsReady() {
@@ -155,7 +174,17 @@ void Task_motorSupervisor(void *pvParams) {
             if (d.startPending && (now - d.startSentMs) > START_REPLY_TIMEOUT_MS) {
                 d.startPending = false;
                 d.lastStartFailed = true;
-                Serial.printf("%s motor driver: no reply to START_FOC\n", kSideName[s]);
+                DeviceLog::printf("[motor] %s driver: no reply to START_FOC\n", kSideName[s]);
+            }
+        }
+
+        // Log each driver's state changes (shows up in the web page's Log tab).
+        for (int s = 0; s < 2; s++) {
+            const MotorLink link = linkOf(drivers[s], now);
+            if (link != drivers[s].loggedLink) {
+                DeviceLog::printf("[motor] %s driver: %s -> %s\n", kSideName[s],
+                                  motorLinkName(drivers[s].loggedLink), motorLinkName(link));
+                drivers[s].loggedLink = link;
             }
         }
 
@@ -174,7 +203,7 @@ void Task_motorSupervisor(void *pvParams) {
                 d.startSentMs = now;
                 lastStartAttemptMs[s] = now;
                 startedOnce[s] = true;
-                Serial.printf("%s motor driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
+                DeviceLog::printf("[motor] %s driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
                 sendStartFOC(kCommandId[s]);
                 break; // one at a time
             }

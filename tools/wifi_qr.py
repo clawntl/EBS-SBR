@@ -9,7 +9,7 @@ address (see firmware/src/WebInterface.cpp), e.g.
 
 The suffix is printed on the serial console at boot:
 
-    [wifi] AP "BalanceBot-5302cc" (password "balancebot-5302cc") up at 192.168.4.1
+    [wifi] AP "BalanceBot-5302cc" (password "balancebot-5302cc") up at 192.168.71.1
 
 Usage:
     python tools/wifi_qr.py 5302cc

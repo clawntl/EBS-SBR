@@ -2,6 +2,10 @@
 
 #include <Arduino.h>
 
+// Live tuning values used by the control code. They are set at boot from the
+// saved settings (or the defaults) and changed through Settings (src/Settings.h),
+// which the web page and serial commands use. Defaults live in Settings.cpp.
+
 // K0: Wheel displacement gain
 // K1: Tilt angle gain
 // K2: Yaw angle gain

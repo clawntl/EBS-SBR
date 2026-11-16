@@ -2,7 +2,10 @@
 
 #include <Arduino.h>
 
+#include "Battery.h"
 #include "CANConfig.h"
+#include "Capture.h"
+#include "DeviceLog.h"
 #include "CanBus.h"
 #include "IMUDriver.h"
 #include "MotorDrivers.h"
@@ -18,6 +21,19 @@ volatile unsigned long joystickLastUpdateMs = 0;
 volatile BalanceState balanceState = BalanceState::MotorsNotReady;
 
 namespace {
+// RAD_TO_DEG is a double; the S3's FPU is single precision only.
+constexpr float kRadToDeg = 57.2957795f;
+
+portMUX_TYPE snapshotLock = portMUX_INITIALIZER_UNLOCKED;
+ControlSample snapshot = {};
+uint16_t measuredLoopHz = 0;
+
+void publish(const ControlSample &s) {
+  portENTER_CRITICAL(&snapshotLock);
+  snapshot = s;
+  portEXIT_CRITICAL(&snapshotLock);
+}
+
 constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
 
 // If no IMU sample arrives for this long, stop driving the motors (0 A)
@@ -25,6 +41,26 @@ constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
 // samples at the default 500 Hz.
 constexpr uint32_t IMU_SAMPLE_TIMEOUT_MS = 10;
 } // namespace
+
+const char *balanceStateName(BalanceState s) {
+  switch (s) {
+    case BalanceState::MotorsNotReady: return "motors-off";
+    case BalanceState::ImuStalled:     return "imu-stall";
+    case BalanceState::Paused:         return "paused";
+    case BalanceState::Tipped:         return "tipped";
+    case BalanceState::BatteryLow:     return "battery-low";
+    case BalanceState::Balancing:      return "balancing";
+  }
+  return "?";
+}
+
+ControlSample getControlSnapshot(uint16_t *loopHz) {
+  portENTER_CRITICAL(&snapshotLock);
+  const ControlSample s = snapshot;
+  if (loopHz) *loopHz = measuredLoopHz;
+  portEXIT_CRITICAL(&snapshotLock);
+  return s;
+}
 
 void Task_LQR(void *pvParam) {
   // Run once per IMU sample: Task_BMI160 notifies this task after each one.
@@ -42,6 +78,11 @@ void Task_LQR(void *pvParam) {
   float phi = 0;
   float phi_dot = 0;
 
+  // Loop rate measurement (steps per second).
+  uint32_t rateWindowStartMs = millis();
+  uint16_t stepsInWindow = 0;
+  BalanceState previousState = BalanceState::MotorsNotReady;
+
   while (1) {
       // Wait for the next IMU sample. pdTRUE: clear the count, so if samples
       // were missed we just run once on the newest one.
@@ -49,18 +90,26 @@ void Task_LQR(void *pvParam) {
         // IMU stalled: 0 A, and keep sending it so the drivers get an explicit
         // zero rather than relying on their own command timeout.
         if (!imuStalled) {
-          Serial.printf("LQR: no IMU sample for %lu ms - motors set to 0 A\n", (unsigned long)IMU_SAMPLE_TIMEOUT_MS);
+          DeviceLog::printf("[lqr] no IMU sample for %lu ms - motors set to 0 A\n", (unsigned long)IMU_SAMPLE_TIMEOUT_MS);
           imuStalled = true;
         }
         leftTargetCurrent = 0;
         rightTargetCurrent = 0;
         balanceState = BalanceState::ImuStalled;
+        previousState = BalanceState::ImuStalled;
         sendMotorCurrents(0, 0, BOTH_MOTOR_CAN_ADDR);
+        {
+          ControlSample s = getControlSnapshot();
+          s.timeUs = micros();
+          s.lqr = s.curL = s.curR = 0;
+          s.state = BalanceState::ImuStalled;
+          publish(s);
+        }
         lastTime = micros(); // don't integrate phi over the gap
         continue;
       }
       if (imuStalled) {
-        Serial.println("LQR: IMU samples resumed");
+        DeviceLog::println("[lqr] IMU samples resumed");
         imuStalled = false;
       }
 
@@ -136,21 +185,47 @@ void Task_LQR(void *pvParam) {
       //if (!paused && (((theta[1] - angleSetPoint) < (deactivationAngle * DEG_TO_RAD)) && ((theta[1] - angleSetPoint)  > (-deactivationAngle * DEG_TO_RAD)))) {
       const bool upright = ((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD));
       // Don't drive one wheel on its own if the other driver is down.
-      if (!paused && upright && motorsOk) {
+      const bool batteryOk = !Battery::isLow();
+      if (!paused && upright && motorsOk && batteryOk) {
         leftTargetCurrent = currentLeft;
         rightTargetCurrent = currentRight;
         balanceState = BalanceState::Balancing;
       } else {
         leftTargetCurrent = 0;
         rightTargetCurrent = 0;
-        balanceState = !motorsOk ? BalanceState::MotorsNotReady
-                     : paused    ? BalanceState::Paused
-                                 : BalanceState::Tipped;
+        balanceState = !motorsOk  ? BalanceState::MotorsNotReady
+                     : paused     ? BalanceState::Paused
+                     : !batteryOk ? BalanceState::BatteryLow
+                                  : BalanceState::Tipped;
       }
 
       // Send straight away (previously a separate 500 Hz task sent whatever
       // the latest values were, adding up to one extra period of delay).
       sendMotorCurrents(leftTargetCurrent, rightTargetCurrent, BOTH_MOTOR_CAN_ADDR);
+
+      // Live data for the web page, and the recording (if one is running).
+      const BalanceState st = balanceState;
+      const ControlSample sample = {
+        currentTime,
+        theta[2] * kRadToDeg, theta_dot[2] * kRadToDeg, angleSetPoint * kRadToDeg,
+        phi, phi_dot, theta_dot[0] * kRadToDeg,
+        motorsOk ? leftShaftVelocity : 0.0f, motorsOk ? rightShaftVelocity : 0.0f,
+        current_LQR, leftTargetCurrent, rightTargetCurrent,
+        axisX, axisY, st,
+      };
+      publish(sample);
+      Capture::record(sample, previousState);
+      previousState = st;
+
+      stepsInWindow++;
+      const uint32_t nowMs = millis();
+      if (nowMs - rateWindowStartMs >= 1000) {
+        portENTER_CRITICAL(&snapshotLock);
+        measuredLoopHz = (uint16_t)((stepsInWindow * 1000UL) / (nowMs - rateWindowStartMs));
+        portEXIT_CRITICAL(&snapshotLock);
+        stepsInWindow = 0;
+        rateWindowStartMs = nowMs;
+      }
 
       //Serial.print("\t"); Serial.print("L: "); Serial.print(currentLeft, 3); Serial.print("A");
       //Serial.print("\t"); Serial.print("R: "); Serial.print(currentRight, 3); Serial.print("A");

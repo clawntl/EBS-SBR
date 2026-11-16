@@ -2,11 +2,13 @@
 
 #include "CANConfig.h"
 #include "CanBus.h"
+#include "DeviceLog.h"
 #include "Display.h"
 #include "IMUDriver.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
 #include "PinConfig.h"
+#include "Settings.h"
 #include "SerialCommands.h"
 #include "StatusLED.h"
 #include "WebInterface.h"
@@ -16,20 +18,24 @@ void setup() {
 
     Serial.begin(115200);
     delay(5000);
-    Serial.println("Hi world");
+    DeviceLog::println("[boot] EBS-SBR controller starting (built " __DATE__ " " __TIME__ ")");
+
+    // Saved tuning (or the defaults) into the RobotParams globals, before
+    // anything uses them.
+    Settings::load();
 
     initDisplay();
 
     initStatusLED();
 
-    Serial.println("Starting Web Interface");
     displayBootMessage("Starting WiFi...");
-    initWebInterface();
+    // Network task on core 0: WiFi, web page, OTA and the battery monitor.
+    startWebInterface();
 
     pinMode(BTN_PIN, INPUT);
 
     delay(500);
-    Serial.println("Starting CAN");
+    DeviceLog::println("[boot] starting CAN");
     displayBootMessage("Starting CAN...");
     initCanBus();
     delay(10);
@@ -50,11 +56,11 @@ void setup() {
 
     // Wait for both motors before zeroing the IMU: the FOC alignment moves
     // the wheels, which would upset the gyro offset measurement.
-    Serial.println("Waiting for motor drivers...");
+    DeviceLog::println("[boot] waiting for the motor drivers...");
     if (waitForMotorsReady(15'000)) {
-        Serial.println("Both motor drivers running");
+        DeviceLog::println("[boot] both motor drivers running");
     } else {
-        Serial.println("WARNING: motor drivers not both running - continuing (supervisor keeps retrying)");
+        DeviceLog::println("[boot] WARNING: motor drivers not both running - continuing (supervisor keeps retrying)");
     }
     delay(500); // let the robot settle after alignment
 
@@ -71,12 +77,13 @@ void setup() {
     // xTaskCreatePinnedToCore(Task_outputGyroData, "Task_outputGyroData", 2048, NULL, 1, NULL, 1);
 
     delay(3000);
-    Serial.println("Starting LQR Loop");
+    DeviceLog::println("[boot] starting the balance controller");
     xTaskCreatePinnedToCore(Task_LQR, "LQR Task", 4096, NULL, 3, NULL, 1);
 }
 
 void loop() {
     processSerialCommands();
-    loopWebInterface();
-    vTaskDelay(0);
+    // loop() runs on core 1 alongside Task_readCAN at the same priority;
+    // a short sleep leaves that core to the control tasks.
+    vTaskDelay(pdMS_TO_TICKS(10));
 }

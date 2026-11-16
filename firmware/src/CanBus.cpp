@@ -5,6 +5,7 @@
 
 #include "ByteUtils.h"
 #include "CANConfig.h"
+#include "DeviceLog.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
 #include "PinConfig.h"
@@ -36,7 +37,7 @@ bool initCanBus() {
     settings.mFilters.addMaskFilter(CAN_RX_FILTER_ID, CAN_RX_FILTER_MASK, false);
 
     const uint32_t errorCode = can0.begin(settings);
-    Serial.printf("can0.begin: %s (0x%08lX), actual bit rate %lu bit/s, sample point %.1f %%\n",
+    DeviceLog::printf("[can] begin: %s (0x%08lX), actual bit rate %lu bit/s, sample point %.1f %%\n",
                   (errorCode == 0) ? "OK" : "FAILED", (unsigned long) errorCode,
                   (unsigned long) settings.actualArbitrationBitRate(),
                   settings.arbitrationSamplePointFromBitStart());
@@ -118,7 +119,9 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
         }
         case CMD_DRIVER_STATUS: {
             if (rxMsg.len < 3) return;
-            handleDriverStatusFrame(side, rxMsg.data[1], rxMsg.data[2]);
+            // Bytes 3-4: supply voltage in mV, big-endian (0 / absent = none).
+            const uint16_t mv = (rxMsg.len >= 5) ? (uint16_t)((rxMsg.data[3] << 8) | rxMsg.data[4]) : 0;
+            handleDriverStatusFrame(side, rxMsg.data[1], rxMsg.data[2], mv);
             break;
         }
         case CMD_START_FOC: {
