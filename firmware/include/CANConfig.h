@@ -18,10 +18,39 @@ static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_1 = 6;
 static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_2 = 1;
 static const uint32_t CAN_ARBITRATION_SJW = 1;
 
-// Acceptance filter: driver telemetry 0x100-0x10F (0x100 itself is where a
-// firmware 1.0/1.1 "right" board still reports, so it can be spotted).
+// Acceptance filters (the S3's one hardware filter split in two):
+//  - driver telemetry 0x100-0x10F (0x100 itself is where a firmware 1.0/1.1
+//    "right" board still reports, so it can be spotted)
+//  - CAN module drive requests 0x200-0x20F
 static const uint32_t CAN_RX_FILTER_ID = 0x100;
 static const uint32_t CAN_RX_FILTER_MASK = 0x7F0;
+static const uint32_t CAN_RX_FILTER2_ID = 0x200;
+static const uint32_t CAN_RX_FILTER2_MASK = 0x7F0;
+
+// ----------------------------------------------
+// CAN modules (see docs/can-modules.md)
+// ----------------------------------------------
+// Module m (0-15) -> robot, drive request, at least every 250 ms while driving:
+//   [int16 speed, 0.01 rad/s of wheel speed, + = forward]
+//   [int16 turn, 0.1 deg/s, + = turning right (clockwise seen from above)]
+//   [flags: MODULE_FLAG_*][sequence counter, optional]
+//   Big-endian. With MODULE_FLAG_FRACTION the two values are instead
+//   fractions of the robot's top speed / turn rate, x 1/32767.
+#define MODULE_DRIVE_ID_BASE  0x200
+#define MODULE_FLAG_DRIVE     0x01   // asking to drive (0 = present, not driving)
+#define MODULE_FLAG_FRACTION  0x02   // values are fractions, not units
+// Robot -> modules: state, every 20 ms:
+//   [BalanceState][drive source: DriveInput::Source | module id << 4]
+//   [int16 tilt from set point, 0.01 deg][int16 wheel speed, 0.01 rad/s, + = forward]
+//   [int16 turn rate, 0.1 deg/s, + = right]
+#define ROBOT_STATE_ID        0x180
+// Robot -> modules: limits and battery, every 500 ms:
+//   [uint16 battery mV][battery %, 255 = unknown][ROBOT_FLAG_*]
+//   [uint16 top speed, 0.01 rad/s][uint16 turn rate, 0.1 deg/s]
+#define ROBOT_INFO_ID         0x181
+#define ROBOT_FLAG_PAUSED          0x01
+#define ROBOT_FLAG_BATTERY_LOW     0x02
+#define ROBOT_FLAG_MODULES_ALLOWED 0x04
 
 // ----------------------------------------------
 // Node IDs (driver CAN protocol 3, firmware 1.2+)

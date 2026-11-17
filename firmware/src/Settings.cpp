@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "Config.h"
+#include "DriveInput.h"
+#include "Gamepad.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
 
@@ -56,6 +58,12 @@ const ParamDef kParams[] = {
      "If the robot tilts more than this from upright it has fallen over, and the motors are set to "
      "0 A. To start again, stand it up within the start angle below and hold it still.",
      [](float v) { deactivationAngle = v; }, 0},
+    {"maxCurrent", "Current limit (A per wheel)", "Balance", 1.5f, 0.5f, 2.0f, 0.05f, false,
+     "The most current the controller asks of each motor (balancing and turning together; balancing "
+     "comes first). More gives more torque to catch a bump or a big lean, but it heats the motors "
+     "and draws harder on the battery: the gimbal motors take short peaks well, but sustained "
+     "high current makes them hot. The drivers themselves limit at 2 A. Was a fixed 1 A.",
+     [](float v) { maxWheelCurrent = v; }, 0},
     {"engageAngle", "Start angle (deg)", "Balance", 10.0f, 2.0f, 40.0f, 1.0f, false,
      "Balancing only starts once the robot is within this angle of the set point AND held still "
      "(not swinging, wheels stopped) for 0.3 s. Then it keeps going until it passes the cut-out "
@@ -125,12 +133,31 @@ const ParamDef kParams[] = {
     {"maxTurn", "Turn rate (deg/s)", "Driving", 120.0f, 0.0f, 360.0f, 5.0f, false,
      "Turn rate requested at full left/right.",
      [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},
+    {"modules", "Allow CAN modules (0/1)", "Driving", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Let modules on the CAN bus (e.g. a line follower or a Raspberry Pi) drive the robot. The web "
+     "joystick and the Xbox controller always take over while their stick is off-centre; a module "
+     "drives when neither is in use. See docs/can-modules.md for the CAN frames.",
+     [](float v) { DriveInput::modulesAllowed = v > 0.5f; }, 0},
     {"turnGain", "Turn feed-forward (A)", "Driving", 0.1f, 0.0f, 1.0f, 0.01f, false,
      "Differential current added straight away at full left/right (taken from one wheel, added "
      "to the other), so turns start without waiting for the turn-rate error to build. The "
      "heading-hold gains (K2, K5) then correct it to the requested rate. With K2 and K5 at 0 this "
      "is the only turning current, as before.",
      [](float v) { turnFeedForward = v; }, 0},
+
+    // ---- Xbox controller ---------------------------------------------------------------
+    {"gpEnable", "Xbox controller over BLE (0/1)", "Xbox controller", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Pair an Xbox controller directly with the robot (Control tab). Off disconnects the controller "
+     "and stops all Bluetooth radio use, leaving the radio to Wi-Fi (applies straight away).",
+     [](float v) { Gamepad::enabled = v > 0.5f; }, 0},
+    {"gpLayout", "Stick layout (0/1)", "Xbox controller", 0.0f, 0.0f, 1.0f, 1.0f, false,
+     "0: left stick does both (forward/back and turning). 1: left stick forward/back, right stick "
+     "turning, like an RC car.",
+     [](float v) { Gamepad::layout = v > 0.5f ? 1 : 0; }, 0},
+    {"gpDeadzone", "Stick dead zone", "Xbox controller", 0.12f, 0.0f, 0.5f, 0.01f, false,
+     "Stick movement ignored around the centre (fraction of full travel), so a stick that doesn't "
+     "centre exactly doesn't creep the robot or hold off a CAN module.",
+     [](float v) { Gamepad::deadzone = v; }, 0},
 
     // ---- System ---------------------------------------------------------------------
     {"battCutoff", "Battery cutoff (V, 0 = off)", "System", 9.6f, 0.0f, 12.6f, 0.1f, false,
@@ -152,6 +179,9 @@ const ParamDef kParams[] = {
      "firmware 1.1 or later (older firmware keeps 10 ms); applies when a driver (re)starts or this "
      "changes.",
      [](float v) { wheelTelemetryMs = (uint8_t)lroundf(v); }, 0},
+    {"recSecs", "Recording length (s)", "System", 10.0f, 1.0f, 60.0f, 1.0f, false,
+     "Length of a recording: the Record panel's choice, also used by the Xbox controller's Y button.",
+     [](float) {}, PARAM_FLAG_HIDDEN},
     {"recEvery", "Record every Nth step", "System", 1.0f, 1.0f, 20.0f, 1.0f, false,
      "Recordings normally keep every control step (up to about 60 s at 500 Hz, 30 s at 1000 Hz). "
      "2 keeps every other step and doubles the longest recording, and so on. Applies to the next "

@@ -7,13 +7,7 @@
 extern float leftTargetCurrent;
 extern float rightTargetCurrent;
 
-// Joystick drive input, written by WebInterface from the latest WebSocket
-// message. Range -1..1. Task_LQR treats this as stale (and zeros it) if it
-// hasn't been refreshed within JOYSTICK_TIMEOUT_MS, so a dropped connection
-// can't leave the robot driving blind.
-extern volatile float joystickAxisX; // turn rate set point, x maxTurnRate
-extern volatile float joystickAxisY; // +1 = full forward (wheel speed set point, x maxWheelSpeed)
-extern volatile unsigned long joystickLastUpdateMs;
+// (Drive input - joystick, gamepad, CAN modules - comes from DriveInput.h.)
 
 // What Task_LQR is currently doing (for the display).
 enum class BalanceState : uint8_t {
@@ -45,6 +39,7 @@ struct ControlSample {
     float curL, curR;     // [A] currents actually sent
     float joyX, joyY;     // joystick input actually used (-1..1, 0 if stale)
     BalanceState state;
+    uint8_t source;       // DriveInput::Source in bits 0-3, module id in bits 4-7
 
     // Position & heading hold (0 unless balancing).
     float posErr;         // [rad] wheel angle minus its reference (clamped)

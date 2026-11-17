@@ -10,14 +10,12 @@
 #include "IMUDriver.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
+#include "DriveInput.h"
 #include "Settings.h"
 
 float leftTargetCurrent = 0;
 float rightTargetCurrent = 0;
 
-volatile float joystickAxisX = 0;
-volatile float joystickAxisY = 0;
-volatile unsigned long joystickLastUpdateMs = 0;
 
 volatile BalanceState balanceState = BalanceState::MotorsNotReady;
 
@@ -35,7 +33,6 @@ void publish(const ControlSample &s) {
   portEXIT_CRITICAL(&snapshotLock);
 }
 
-constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
 
 // Set point trim learning (see learnTrim). Only while standing still: no
 // drive input for TRIM_SETTLE_MS, balancing for at least that long and not
@@ -197,17 +194,11 @@ void Task_LQR(void *pvParam) {
       // current (left wheel forwards, right backwards) turns the robot.
       const float psi_dot = yawInvert ? -theta_dot[0] : theta_dot[0];
 
-      // Pull in the latest joystick input, but treat it as stale (i.e. zero
-      // it) if WebInterface hasn't refreshed it recently - protects against a
-      // dropped WebSocket leaving the robot driving on a frozen command.
-      float axisX = joystickAxisX;
-      float axisY = joystickAxisY;
-      if (millis() - joystickLastUpdateMs > JOYSTICK_TIMEOUT_MS) {
-        axisX = 0;
-        axisY = 0;
-      }
-      axisX = constrain(axisX, -1.0f, 1.0f);
-      axisY = constrain(axisY, -1.0f, 1.0f);
+      // Drive input from whichever source is in charge (web joystick, BLE
+      // gamepad, CAN module - see DriveInput.h). Stale sources read as 0.
+      const DriveInput::Demand demand = DriveInput::current();
+      const float axisX = demand.turn;
+      const float axisY = demand.speed;
 
       // ---- Set points from the drive input -------------------------------
       // Speed: ramp towards the request at maxWheelAccel. The position
@@ -266,11 +257,12 @@ void Task_LQR(void *pvParam) {
       const float yawCurrentWanted = turnFeedForward * axisX
                                    - (K[2] * headErr + K[5] * (psi_dot - yawRateRef));
 
-      // Each wheel is limited to +-1 A. Balance comes first: the turning
+      // Each wheel is limited to +-maxWheelCurrent. Balance comes first: the turning
       // current only gets what's left, so a hard turn can't starve the
       // balance loop and tip the robot over.
-      const float half = constrain(current_LQR / 2, -1.0f, 1.0f);
-      const float yawRoom = 1.0f - fabsf(half);
+      const float iMax = constrain(maxWheelCurrent, 0.1f, 2.0f);
+      const float half = constrain(current_LQR / 2, -iMax, iMax);
+      const float yawRoom = iMax - fabsf(half);
       const float yawCurrent = constrain(yawCurrentWanted, -yawRoom, yawRoom);
       const float currentLeft = half + yawCurrent;
       const float currentRight = half - yawCurrent;
@@ -361,6 +353,7 @@ void Task_LQR(void *pvParam) {
       sample.joyX = axisX;
       sample.joyY = axisY;
       sample.state = st;
+      sample.source = (uint8_t)demand.source | (uint8_t)(demand.module << 4);
       sample.posErr = running ? posErr : 0.0f;
       sample.speedRef = running ? speedRef : 0.0f;
       sample.heading = psi * kRadToDeg;

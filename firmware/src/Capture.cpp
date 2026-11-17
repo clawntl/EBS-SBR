@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Battery.h"
+#include "DriveInput.h"
 #include "RobotParams.h"
 #include "Settings.h"
 
@@ -39,7 +40,7 @@ struct Sample {
     int8_t joyX;       // x 100
     int8_t joyY;       // x 100
     uint8_t state;     // BalanceState
-    uint8_t spare;
+    uint8_t source;    // DriveInput::Source (bits 0-3) | module id << 4
     int16_t posErr;    // rad x 100
     int16_t speedRef;  // rad/s x 100
     int16_t heading;   // deg x 10
@@ -185,7 +186,7 @@ void record(const ControlSample &s, BalanceState previousState) {
     d.joyX = fixed8(s.joyX, 100);
     d.joyY = fixed8(s.joyY, 100);
     d.state = (uint8_t)s.state;
-    d.spare = 0;
+    d.source = s.source;
     d.posErr = fixed(s.posErr, 100);
     d.speedRef = fixed(s.speedRef, 100);
     d.heading = fixed(s.heading, 10);
@@ -223,7 +224,7 @@ bool CsvReader::nextLine() {
         pending += line;
         pending += "# controller: lqr = -(K0*pos_err + K1*(tilt-setpoint) + K3*(phi_dot-speed_ref) + K4*tilt_rate) [A, total]; "
                    "yaw_cur = turnGain*joy_x - (K2*head_err + K5*(yaw_rate-yaw_rate_ref)) [A]; "
-                   "cur_l/cur_r = lqr/2 +- yaw_cur, each within +-1 A (balance first), 0 unless balancing\n";
+                   "cur_l/cur_r = lqr/2 +- yaw_cur, each within +-maxCurrent (balance first), 0 unless balancing\n";
         pending += "# units: deg, deg/s, rad, rad/s, A, g; tilt = roll from the IMU filter, setpoint = set point + learned trim, phi = wheel angle (avg of both), "
                    "heading/pos_err/head_err reset when balancing starts; gx..az = raw IMU body axes (x up, y forward, z along the axle)\n";
         size_t paramCount;
@@ -235,15 +236,19 @@ bool CsvReader::nextLine() {
         }
         pending += " (at the start of the recording)\n";
         pending += "t_ms,state,tilt,tilt_rate,setpoint,phi,phi_dot,yaw_rate,wheel_l,wheel_r,lqr,cur_l,cur_r,joy_x,joy_y,"
-                   "pos_err,speed_ref,heading,head_err,yaw_rate_ref,yaw_cur,pitch,gx,gy,gz,ax,ay,az\n";
+                   "pos_err,speed_ref,heading,head_err,yaw_rate_ref,yaw_cur,pitch,gx,gy,gz,ax,ay,az,drive_src\n";
         row = 0;
         return true;
     }
     if (row >= (int32_t)n) return false;
     const Sample &s = buffer[row++];
+    char src[12];
+    const uint8_t srcKind = s.source & 0x0F;
+    if (srcKind == (uint8_t)DriveInput::Source::Module) snprintf(src, sizeof(src), "module%u", s.source >> 4);
+    else snprintf(src, sizeof(src), "%s", DriveInput::sourceName((DriveInput::Source)srcKind));
     const int len = snprintf(line, sizeof(line),
                              "%.3f,%s,%.2f,%.1f,%.2f,%.1f,%.2f,%.1f,%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,"
-                             "%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.2f,%.1f,%.1f,%.1f,%.4f,%.4f,%.4f\n",
+                             "%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.2f,%.1f,%.1f,%.1f,%.4f,%.4f,%.4f,%s\n",
                              s.tUs / 1000.0f, stateCsvName(s.state), s.tilt / 100.0f, s.tiltRate / 10.0f,
                              s.setpoint / 100.0f, s.phi / 10.0f, s.phiDot / 100.0f, s.yawRate / 10.0f,
                              s.wheelL / 100.0f, s.wheelR / 100.0f, s.lqr / 1000.0f, s.curL / 1000.0f,
@@ -251,7 +256,7 @@ bool CsvReader::nextLine() {
                              s.posErr / 100.0f, s.speedRef / 100.0f, s.heading / 10.0f, s.headErr / 100.0f,
                              s.yawRateRef / 10.0f, s.yawCur / 1000.0f, s.pitch / 100.0f,
                              s.gyro[0] / 10.0f, s.gyro[1] / 10.0f, s.gyro[2] / 10.0f,
-                             s.accel[0] / 10000.0f, s.accel[1] / 10000.0f, s.accel[2] / 10000.0f);
+                             s.accel[0] / 10000.0f, s.accel[1] / 10000.0f, s.accel[2] / 10000.0f, src);
     pending = String(line, len);
     return true;
 }
