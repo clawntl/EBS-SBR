@@ -58,6 +58,12 @@ struct ControlSample {
 // Latest step plus the measured control loop rate [Hz].
 ControlSample getControlSnapshot(uint16_t *loopHz = nullptr);
 
+// Wheel spin test for tuning (measures motor torque per amp against wheel
+// inertia): with the robot lying down and its wheels free, drives both wheels
+// at +amps, 0, -amps, 0 for phaseMs each, and records it. Returns nullptr if
+// started, otherwise why not.
+const char *requestSpinTest(float amps, uint32_t phaseMs);
+
 // Publishes the learned set point trim to Settings (about once a second)
 // and saves it to flash once the robot stops balancing. Call regularly from
 // a core-0 task (the network task does).

@@ -41,8 +41,12 @@ void store(Input &in, float turn, float speed, bool active) {
     portEXIT_CRITICAL(&lock);
 }
 
+// Signed difference: another core may have stored an update stamped a
+// millisecond AFTER the caller read `now` (or in the same millisecond, with
+// the |1 above); unsigned `now - updatedMs` would then wrap to ~4e9 and the
+// input would look stale for one control step.
 bool fresh(const Input &in, uint32_t now, uint32_t timeout) {
-    return in.updatedMs && now - in.updatedMs <= timeout;
+    return in.updatedMs && (int32_t)(now - in.updatedMs) <= (int32_t)timeout;
 }
 
 } // namespace

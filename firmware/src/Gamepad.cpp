@@ -10,6 +10,7 @@
 #include "DeviceLog.h"
 #include "Settings.h"
 #include "DriveInput.h"
+#include "LQRControl.h"
 #include "RobotParams.h"
 
 namespace Gamepad {
@@ -149,6 +150,7 @@ void Task_gamepad(void *) {
     uint32_t lastNotifyAt = 0, lastNotifySeenMs = 0;
     bool lastA = false, lastB = false, lastY = false;
     Capture::State lastCapture = Capture::state();
+    BalanceState lastBalance = balanceState;
 
     for (;;) {
         const uint32_t now = millis();
@@ -220,7 +222,7 @@ void Task_gamepad(void *) {
         wasScanning = scanning;
 
         // Ask for a longer connection interval once settled after connecting.
-        if (connected && !connParamsAsked && now - connectedAtMs >= CONN_PARAMS_DELAY_MS) {
+        if (connected && wasConnected && !connParamsAsked && now - connectedAtMs >= CONN_PARAMS_DELAY_MS) {
             connParamsAsked = true;
             NimBLEClient *c = XboxSeriesXControllerESP32_asukiaaa::pConnectedClient;
             if (c && c->isConnected()) {
@@ -246,6 +248,8 @@ void Task_gamepad(void *) {
             DeviceLog::printf("[gamepad] connected (%s)\n", a.c_str());
             connectedAtMs = now;
             connParamsAsked = false;
+            buzz(2, 80, 80, 35); // connected
+            lastBalance = balanceState;
         } else if (!connected && wasConnected) {
             DeviceLog::println("[gamepad] disconnected");
             DriveInput::setGamepad(0, 0);
@@ -300,11 +304,22 @@ void Task_gamepad(void *) {
                 lastCapture = cs;
             }
 
+            // Balancing started / fell over (or was picked up): buzz. Not for
+            // pausing, a stalled IMU or the drivers dropping out.
+            const BalanceState bs = balanceState;
+            if (bs != lastBalance) {
+                if (bs == BalanceState::Balancing) buzz(1, 80, 0, 80);
+                else if (lastBalance == BalanceState::Balancing &&
+                         (bs == BalanceState::Tipped || bs == BalanceState::Runaway)) buzz(1, 500, 0, 80);
+                lastBalance = bs;
+            }
+
             // Battery % (BLE battery service; arrives when it changes).
             if (xbox.getReceiveBatteryAt()) setBattery(xbox.battery);
         } else {
             lastA = lastB = lastY = false;
             lastCapture = Capture::state();
+            lastBalance = balanceState;
             if (pairing) setState(State::Pairing, (uint8_t)((pairUntil - now + 999) / 1000));
             else setState(addr.length() ? State::Searching : State::NotPaired);
         }

@@ -372,6 +372,9 @@ void handleMessage(const uint8_t *data, size_t len) {
             else if (!strcmp(op, "setNode"))  err = requestDriverOp(sd, DriverOp::SetNodeId, v);
         }
         if (err) sendNotice(err, false);
+    } else if (!strcmp(cmd, "spinTest")) {
+        const char *err = requestSpinTest(doc["amps"] | 0.1f, doc["ms"] | 200);
+        sendNotice(err ? err : "Spin test running - recording", !err);
     } else if (!strcmp(cmd, "recSecs")) {
         // Saved on its own (not part of Save to flash), unless balancing:
         // a flash write briefly stalls the control loop.

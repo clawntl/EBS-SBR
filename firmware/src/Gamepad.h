@@ -15,8 +15,9 @@
 // Driving: left stick (or left stick forward/back + right stick left/right,
 // the `gpLayout` setting) -> DriveInput::setGamepad(). B = pause, A = resume,
 // Y = start a recording (the length set on the web page, `recSecs`) or stop
-// one early. The controller buzzes once when a recording starts and twice
-// when it finishes.
+// one early. Buzzes: two light ones on connecting; one short when balancing
+// starts; one long when it falls over or is picked up (balancing -> tipped
+// or runaway); one at a recording's start and two at its end.
 // The ESP32-S3 only has BLE (not Bluetooth Classic), which these
 // controllers support; Wi-Fi and BLE share the radio.
 namespace Gamepad {

@@ -56,7 +56,9 @@ volatile uint32_t heardMs[NODE_ID_MAX + 1] = {};
 const char *const kSideName[2] = { "Left", "Right" };
 
 bool heartbeatFresh(const DriverTrack &d, uint32_t now) {
-    return d.everSeen && (now - d.lastHeartbeatMs) < HEARTBEAT_TIMEOUT_MS;
+    // Signed: the CAN task (other core) may store a heartbeat time later than
+    // the caller's `now`; unsigned it would wrap and read as offline.
+    return d.everSeen && (int32_t)(now - d.lastHeartbeatMs) < (int32_t)HEARTBEAT_TIMEOUT_MS;
 }
 
 MotorLink linkOf(const DriverTrack &d, uint32_t now) {
@@ -193,7 +195,7 @@ uint16_t nodesHeard() {
     uint16_t bits = 0;
     for (int n = 0; n <= NODE_ID_MAX; n++) {
         const uint32_t t = heardMs[n];
-        if (t && now - t < 2000) bits |= 1u << n;
+        if (t && (int32_t)(now - t) < 2000) bits |= 1u << n;
     }
     return bits;
 }
