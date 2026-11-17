@@ -426,9 +426,18 @@
       <p class="muted"><b>Re-run alignment</b> finds the angle between the motor's magnet sensor and its windings
         again (needed after the motor, magnet or sensor is remounted). The driver reboots twice and the wheel turns a
         little, so lay the robot on its side or lift that wheel.</p>
-      <div class="actions"><button id="drvSwap">Swap sides</button></div>
-      <p class="muted">Swaps which board is left and which is right (both are changed and saved together, so their CAN
-        addresses swap) - for boards that were set up the wrong way round.</p>
+      <h2 style="margin-top:14px">Wheels</h2>
+      <div class="actions">
+        <label>Left wheel: node <select id="drvNodeL" class="inline"></select></label>
+        <label>Right wheel: node <select id="drvNodeR" class="inline"></select></label>
+        <button id="drvSwap">Swap</button>
+      </div>
+      <p class="muted">Each driver board has a CAN node ID (1-15); these choose which boards are this robot's wheels
+        (saved here, nothing changes on the boards). <b>Swap</b> if the wheels respond to the wrong side's commands.
+        Nodes marked "heard" are reporting on the bus now. <b>Change node ID</b> (under a driver) changes the ID saved
+        on that board itself, e.g. to make room for more boards; this robot follows it.</p>
+      <p class="bad-text" id="drvLegacy" hidden>A board with firmware 1.0/1.1 set to "right" is reporting on the
+        bus (ID 0x100). Update it to 1.2 over USB: this firmware sends motor currents in the new format.</p>
     </div>
   </section>
 
@@ -767,6 +776,7 @@ function buildSettings(list) {
   container.textContent = "";
   const panels = {};
   for (const p of list) {
+    if (p.hidden) continue; // set elsewhere (e.g. the Drivers tab)
     if (!panels[p.group]) {
       const panel = document.createElement("div");
       panel.className = "panel";
@@ -1724,16 +1734,19 @@ function renderDrivers(m) {
   driversMsg = m;
   const busy = !!m.job;
   setText($("drvJob"), m.job ? "Working: " + m.job : m.balancing ? "Balancing - pause it or lay it down to change driver settings." : "\u00a0");
+  const heard = new Set(m.heard || []);
   m.d.forEach((d, i) => {
-    const sideName = (v) => v === 1 ? "left" : v === 2 ? "right" : "not set";
-    const rows = [["State", d.link]];
-    if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)`]);
+    const nodeName = (v) => v ? `${v}` : "not set";
+    const rows = [["CAN node", `${d.node} (commands 0x${(0x20 + d.node).toString(16).padStart(3, "0")}, ` +
+                               `telemetry 0x${(0x100 + d.node).toString(16)})`], ["State", d.link]];
+    if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)` +
+                                        (d.proto < 3 ? " - update to 1.2: it won't receive motor currents from this controller" : "")]);
     else if (d.old) rows.push(["Firmware", "1.0 or older: settings over CAN need 1.1 (update over USB)"]);
     else rows.push(["Firmware", "-"]);
     const a = d.active, p = d.pending;
     if (a) {
       const pendNote = (now, next) => (p && next !== now) ? ` \u2192 ${next} after save` : "";
-      rows.push(["Side", sideName(a.side) + pendNote(sideName(a.side), p && sideName(p.side))]);
+      if (p && p.node !== a.node) rows.push(["Node ID", `${nodeName(a.node)} \u2192 ${nodeName(p.node)} after save`]);
       rows.push(["Direction", (a.invert ? "inverted" : "normal") + pendNote(a.invert ? "inverted" : "normal", p && (p.invert ? "inverted" : "normal"))]);
       const calNow = a.cal ? `stored (${a.ccw ? "CCW" : "CW"}, ${a.zero.toFixed(3)} rad)` : "none: aligns at every start";
       rows.push(["Alignment", calNow + (p && p.cal !== a.cal ? (p.cal ? " \u2192 new one after save" : " \u2192 cleared after save") : "")
@@ -1748,7 +1761,7 @@ function renderDrivers(m) {
       tr.append(td1, td2);
       t.appendChild(tr);
     }
-    const can = d.known && d.proto >= 2 && !busy && !m.balancing;
+    const can = d.known && d.proto >= 2 && d.link !== "OFFLINE" && !busy && !m.balancing;
     const acts = $("drvActions" + i);
     acts.innerHTML = "";
     const btn = (label, op, opts = {}) => {
@@ -1772,20 +1785,54 @@ function renderDrivers(m) {
       btn("Re-run alignment", "recal", { ask: "The " + (i ? "right" : "left") + " driver reboots twice and its wheel " +
         "turns a little while it aligns (about 15 s). Lay the robot on its side or lift that wheel first.", okLabel: "Align" });
       btn("Reboot", "reboot");
+      // Change the node ID saved on this board.
+      if (d.proto >= 3) {
+        const sel = document.createElement("select");
+        sel.className = "inline";
+        sel.setAttribute("aria-label", "New node ID");
+        for (let n = 1; n <= 15; n++) {
+          if (n === d.node || n === m.d[1 - i].node || heard.has(n)) continue;
+          const o = document.createElement("option");
+          o.value = n; o.textContent = `node ${n}`;
+          sel.appendChild(o);
+        }
+        sel.disabled = !can;
+        acts.appendChild(sel);
+        btn("Change node ID", "setNode", { get value() { return +sel.value; },
+          ask: "Change the node ID saved on the " + (i ? "right" : "left") + " driver board? It reboots with new CAN " +
+               "IDs and this robot uses the new ID for that wheel.", okLabel: "Change" });
+      }
     }
     setText($("drvResult" + i), d.result || "");
   });
-  $("drvSwap").disabled = busy || m.balancing || !m.d.every((d) => d.known && d.proto >= 2);
+  // Wheel -> node dropdowns (don't rebuild while one is open).
+  for (const [id, i] of [["drvNodeL", 0], ["drvNodeR", 1]]) {
+    const sel = $(id);
+    if (document.activeElement === sel) continue;
+    sel.innerHTML = "";
+    for (let n = 1; n <= 15; n++) {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = n + (heard.has(n) ? " (heard)" : "");
+      sel.appendChild(o);
+    }
+    sel.value = m.d[i].node;
+    sel.disabled = busy || m.balancing;
+  }
+  $("drvLegacy").hidden = !heard.has(0);
+  $("drvSwap").disabled = busy || m.balancing;
 }
+
+function sendDriverNodes() {
+  send({ cmd: "driver", op: "nodes", left: +$("drvNodeL").value, right: +$("drvNodeR").value });
+}
+$("drvNodeL").onchange = sendDriverNodes;
+$("drvNodeR").onchange = sendDriverNodes;
 
 document.querySelectorAll("[data-drv]").forEach((b) => {
   b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
 });
-$("drvSwap").onclick = async () => {
-  if (!(await ask("Swap which board is left and which is right? Both drivers are changed, saved and rebooted " +
-                  "together. Only do this if the wheels respond to the wrong side's commands.", "Swap", true))) return;
-  send({ cmd: "driver", op: "swap" });
-};
+$("drvSwap").onclick = () => send({ cmd: "driver", op: "swap" });
 
 const handlers = {
   info(m) {

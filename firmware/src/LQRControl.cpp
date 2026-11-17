@@ -166,7 +166,7 @@ void Task_LQR(void *pvParam) {
         rightTargetCurrent = 0;
         balanceState = BalanceState::ImuStalled;
         previousState = BalanceState::ImuStalled;
-        sendMotorCurrents(0, 0, BOTH_MOTOR_CAN_ADDR);
+        sendMotorCurrents(0, 0);
         {
           ControlSample s = getControlSnapshot();
           s.timeUs = micros();
@@ -340,7 +340,7 @@ void Task_LQR(void *pvParam) {
 
       // Send straight away (previously a separate 500 Hz task sent whatever
       // the latest values were, adding up to one extra period of delay).
-      sendMotorCurrents(leftTargetCurrent, rightTargetCurrent, BOTH_MOTOR_CAN_ADDR);
+      sendMotorCurrents(leftTargetCurrent, rightTargetCurrent);
 
       // Live data for the web page, and the recording (if one is running).
       const BalanceState st = balanceState;

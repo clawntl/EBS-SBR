@@ -91,28 +91,28 @@ void sendFloat(uint8_t cmd, float dat, uint32_t canID) {
     can0.tryToSend(txMsg);
 }
 
-// Send a message with float datatype
-void sendMotorCurrents(float leftCur, float rightCur, uint32_t canID) {
-    uint8_t leftFloatData[4]; // Stores a single float (4 bytes)
-    uint8_t rightFloatData[4]; // Stores a single float (4 bytes)
-
-    // Write the float into the byte array
-    float2bytesMSB(leftCur, leftFloatData);
-    float2bytesMSB(rightCur, rightFloatData);
-
+static void sendCurrentFrame(uint32_t id, float slot0, float slot1) {
     CANMessage txMsg;
-    txMsg.id = canID;
+    txMsg.id = id;
     txMsg.ext = false;
     txMsg.rtr = false;
     txMsg.len = 8;
-
-    // Copy the left motor data into the message payload
-    memcpy(txMsg.data, leftFloatData, 4);
-    // Copy the right motor data into the message payload
-    memcpy(txMsg.data + 4, rightFloatData, 4);
-
-    // Send the message
+    float2bytesMSB(slot0, txMsg.data);
+    float2bytesMSB(slot1, txMsg.data + 4);
     can0.tryToSend(txMsg);
+}
+
+void sendMotorCurrents(float leftCur, float rightCur) {
+    const uint8_t nl = driverNode(MOTOR_LEFT), nr = driverNode(MOTOR_RIGHT);
+    const uint32_t fl = CURRENT_FRAME_BASE + (nl - 1) / 2, fr = CURRENT_FRAME_BASE + (nr - 1) / 2;
+    // Slot 0 = odd node, slot 1 = even node.
+    if (fl == fr) {
+        if (nl % 2) sendCurrentFrame(fl, leftCur, rightCur);
+        else        sendCurrentFrame(fl, rightCur, leftCur);
+    } else {
+        sendCurrentFrame(fl, (nl % 2) ? leftCur : NAN, (nl % 2) ? NAN : leftCur);
+        sendCurrentFrame(fr, (nr % 2) ? rightCur : NAN, (nr % 2) ? NAN : rightCur);
+    }
 }
 
 // Handles one frame from a motor driver (telemetry IDs 0x100/0x101).
@@ -168,11 +168,11 @@ void Task_readCAN(void *pvParams) {
             // Only standard (11 bit) IDs are used by this protocol.
             if (rxMsg.ext) continue;
 
-            switch (rxMsg.id) {
-                case LEFT_MOTOR_VELOCITY_CAN_ID:  handleDriverFrame(MOTOR_LEFT, rxMsg);  break;
-                case RIGHT_MOTOR_VELOCITY_CAN_ID: handleDriverFrame(MOTOR_RIGHT, rxMsg); break;
-                default: break;
-            }
+            if (rxMsg.id < TELEMETRY_ID_BASE || rxMsg.id > TELEMETRY_ID_BASE + NODE_ID_MAX) continue;
+            const uint8_t node = rxMsg.id - TELEMETRY_ID_BASE; // 0 = old firmware "right" board
+            if (rxMsg.len >= 2 && rxMsg.data[0] == CMD_DRIVER_STATUS) noteNodeHeard(node, rxMsg.data[1]);
+            if (node == driverNode(MOTOR_LEFT))       handleDriverFrame(MOTOR_LEFT, rxMsg);
+            else if (node == driverNode(MOTOR_RIGHT)) handleDriverFrame(MOTOR_RIGHT, rxMsg);
         }
         // 1 tick: lets lower-priority tasks on this core run (vTaskDelay(0)
         // only yields to equal/higher priority). Frames queue in the driver's

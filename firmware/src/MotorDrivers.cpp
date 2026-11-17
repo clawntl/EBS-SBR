@@ -6,6 +6,7 @@
 #include "CanBus.h"
 #include "DeviceLog.h"
 #include "LQRControl.h"
+#include "Settings.h"
 
 #include <atomic>
 #include <initializer_list>
@@ -45,7 +46,13 @@ struct DriverTrack {
 
 DriverTrack drivers[2];
 
-const uint32_t kCommandId[2] = { LEFT_MOTOR_CAN_ADDR, RIGHT_MOTOR_CAN_ADDR };
+// Node IDs in use for left / right (see driverNode()).
+volatile uint8_t activeNode[2] = { 1, 2 };
+
+uint32_t commandId(int side) { return COMMAND_ID_BASE + activeNode[side]; }
+
+// Last heartbeat from each node 0..15 (0 = old firmware "right" board).
+volatile uint32_t heardMs[NODE_ID_MAX + 1] = {};
 const char *const kSideName[2] = { "Left", "Right" };
 
 bool heartbeatFresh(const DriverTrack &d, uint32_t now) {
@@ -173,6 +180,23 @@ const char *driverErrorName(uint8_t code) {
 // ===========================================================================
 
 uint8_t wheelTelemetryMs = 2;
+uint8_t leftNodeSetting = 1, rightNodeSetting = 2;
+
+uint8_t driverNode(MotorSide side) { return activeNode[side]; }
+
+void noteNodeHeard(uint8_t node, uint8_t) {
+    if (node <= NODE_ID_MAX) heardMs[node] = millis() | 1;
+}
+
+uint16_t nodesHeard() {
+    const uint32_t now = millis();
+    uint16_t bits = 0;
+    for (int n = 0; n <= NODE_ID_MAX; n++) {
+        const uint32_t t = heardMs[n];
+        if (t && now - t < 2000) bits |= 1u << n;
+    }
+    return bits;
+}
 
 namespace {
 
@@ -195,11 +219,11 @@ LastReply lastReply[2];
 bool needsRefresh[2] = { false, false };
 uint8_t sentInterval[2] = { 0, 0 };
 
-enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, Swap };
+enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode };
 enum class Step : uint8_t { Send, WaitReply, WaitInfo,
                             RecalWaitClear, RecalWaitSave1, RecalWaitAligned, RecalWaitStore,
                             RecalWaitSave2, RecalWaitRunning,
-                            SwapWaitSet, SwapWaitSave };
+                            NodeWaitSet, NodeWaitSave };
 
 struct JobState {
     Job job = Job::None;
@@ -247,7 +271,7 @@ void send(MotorSide side, std::initializer_list<uint8_t> bytes) {
     uint8_t b[8];
     uint8_t n = 0;
     for (uint8_t x : bytes) if (n < 8) b[n++] = x;
-    sendDriverCommand(kCommandId[side], b, n);
+    sendDriverCommand(commandId(side), b, n);
 }
 
 void sendSetParam(MotorSide side, uint8_t param, float v) {
@@ -255,7 +279,7 @@ void sendSetParam(MotorSide side, uint8_t param, float v) {
     uint32_t bits;
     memcpy(&bits, &v, 4);
     b[2] = bits >> 24; b[3] = bits >> 16; b[4] = bits >> 8; b[5] = bits;
-    sendDriverCommand(kCommandId[side], b, sizeof(b));
+    sendDriverCommand(commandId(side), b, sizeof(b));
 }
 
 void sendQueries(MotorSide side) {
@@ -439,49 +463,66 @@ void runJob(uint32_t now) {
         return;
     }
 
-    case Job::Swap:
+    case Job::ChangeNode: {
+        const uint8_t newId = (uint8_t)lroundf(job.value);
         if (job.step == Step::Send) {
-            markSent(MOTOR_LEFT, now);
-            markSent(MOTOR_RIGHT, now);
-            sendSetParam(MOTOR_LEFT, PARAM_SIDE, 2);  // left board becomes right
-            sendSetParam(MOTOR_RIGHT, PARAM_SIDE, 1); // right board becomes left
-            job.step = Step::SwapWaitSet;
-        } else if (job.step == Step::SwapWaitSet) {
-            uint8_t a = 0, b = 0;
-            const bool ga = gotReply(MOTOR_LEFT, CMD_SET_PARAM, &a), gb = gotReply(MOTOR_RIGHT, CMD_SET_PARAM, &b);
-            if (ga && gb) {
-                if (a != CONFIG_OK || b != CONFIG_OK) {
-                    // Undo whichever one took, so neither is left pending a swap.
-                    send(MOTOR_LEFT, { CMD_REVERT });
-                    send(MOTOR_RIGHT, { CMD_REVERT });
-                    setResult(MOTOR_LEFT, "Swap failed (%s / %s) - nothing changed", statusText(a), statusText(b));
+            markSent(sd, now);
+            sendSetParam(sd, PARAM_NODE_ID, newId);
+            job.step = Step::NodeWaitSet;
+        } else if (job.step == Step::NodeWaitSet) {
+            if (gotReply(sd, CMD_SET_PARAM, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Node ID change failed: %s", statusText(st)); endJob(); break; }
+                markSent(sd, now);
+                send(sd, { CMD_SAVE });
+                job.step = Step::NodeWaitSave;
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Node ID change failed: no reply"); endJob(); }
+        } else if (job.step == Step::NodeWaitSave) {
+            if (gotReply(sd, CMD_SAVE, &st)) {
+                if (st != CONFIG_OK) {
+                    send(sd, { CMD_REVERT });
+                    setResult(sd, "Node ID change failed: save: %s", statusText(st));
                     endJob();
                     break;
                 }
-                markSent(MOTOR_LEFT, now);
-                markSent(MOTOR_RIGHT, now);
-                send(MOTOR_LEFT, { CMD_SAVE });
-                send(MOTOR_RIGHT, { CMD_SAVE });
-                job.step = Step::SwapWaitSave;
-            } else if (inStep > REPLY_TIMEOUT_MS) {
-                send(MOTOR_LEFT, { CMD_REVERT });
-                send(MOTOR_RIGHT, { CMD_REVERT });
-                setResult(MOTOR_LEFT, "Swap failed: no reply from the %s driver - nothing changed", ga ? "right" : "left");
+                // The board reboots as node newId: follow it.
+                Settings::set(sd == MOTOR_LEFT ? "leftNode" : "rightNode", newId);
+                forgetSettings(sd);
+                setResult(sd, "Now node %u - rebooting", newId);
                 endJob();
-            }
-        } else if (job.step == Step::SwapWaitSave) {
-            uint8_t a = 0, b = 0;
-            const bool ga = gotReply(MOTOR_LEFT, CMD_SAVE, &a), gb = gotReply(MOTOR_RIGHT, CMD_SAVE, &b);
-            if ((ga && gb) || inStep > REPLY_TIMEOUT_MS) {
-                setResult(MOTOR_LEFT, "Sides swapped: %s / %s - both rebooting",
-                          ga ? statusText(a) : "no reply", gb ? statusText(b) : "no reply");
-                forgetSettings(MOTOR_LEFT);
-                forgetSettings(MOTOR_RIGHT);
+            } else if (inStep > REPLY_TIMEOUT_MS) {
+                send(sd, { CMD_REVERT });
+                setResult(sd, "Node ID change failed: no reply to save");
                 endJob();
             }
         }
-        return;
+        break;
     }
+    }
+}
+
+// Takes the wanted left/right node IDs into use, only while not balancing
+// (switching mid-balance would send one wheel's current to another board).
+void serviceNodeMapping() {
+    const uint8_t l = leftNodeSetting, r = rightNodeSetting;
+    if (l == activeNode[0] && r == activeNode[1]) return;
+    if (l < NODE_ID_MIN || l > NODE_ID_MAX || r < NODE_ID_MIN || r > NODE_ID_MAX || l == r) return;
+    if (balanceState == BalanceState::Balancing) return;
+    for (int s = 0; s < 2; s++) {
+        const uint8_t n = s ? r : l;
+        if (activeNode[s] == n) continue;
+        DeviceLog::printf("[driver] %s driver: node %u -> %u\n", kSideName[s], activeNode[s], n);
+        activeNode[s] = n;
+        drivers[s] = DriverTrack{};
+        portENTER_CRITICAL(&cfgLock);
+        cfg[s] = DriverConfigView{};
+        portEXIT_CRITICAL(&cfgLock);
+        sentInterval[s] = 0;
+        needsRefresh[s] = true;
+    }
+    // Remember it (only these two keys; other unsaved settings stay unsaved).
+    if (Settings::savedValue("leftNode") != l) Settings::saveKey("leftNode");
+    if (Settings::savedValue("rightNode") != r) Settings::saveKey("rightNode");
+    bump();
 }
 
 // Velocity telemetry rate: (re)sent whenever a driver is running a firmware
@@ -517,8 +558,8 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
                 float angle;
                 const uint32_t bits = ((uint32_t)d[4] << 24) | ((uint32_t)d[5] << 16) | ((uint32_t)d[6] << 8) | d[7];
                 memcpy(&angle, &bits, 4);
-                if (d[1] == 0) { c.activeKnown = true; c.side = d[2]; c.flags = d[3]; c.zeroAngle = angle; }
-                else           { c.pendingKnown = true; c.pendSide = d[2]; c.pendFlags = d[3]; }
+                if (d[1] == 0) { c.activeKnown = true; c.node = d[2]; c.flags = d[3]; c.zeroAngle = angle; }
+                else           { c.pendingKnown = true; c.pendNode = d[2]; c.pendFlags = d[3]; }
             }
             break;
         default:
@@ -556,6 +597,7 @@ static const char *opName(DriverOp op) {
         case DriverOp::Revert:      return "Revert";
         case DriverOp::Reboot:      return "Reboot";
         case DriverOp::Recalibrate: return "Re-run alignment";
+        case DriverOp::SetNodeId:   return "Change node ID";
     }
     return "?";
 }
@@ -563,7 +605,7 @@ static const char *opName(DriverOp op) {
 static const char *startJob(Job j, MotorSide side, DriverOp op, float value) {
     if (op != DriverOp::Refresh && balanceState == BalanceState::Balancing)
         return "Not while it's balancing - pause it or lay it down first";
-    if (op != DriverOp::Refresh && !cfg[side].infoKnown && j != Job::Swap)
+    if (op != DriverOp::Refresh && !cfg[side].infoKnown)
         return "This driver hasn't answered yet (firmware 1.1 or later is needed for settings over CAN)";
     portENTER_CRITICAL(&cfgLock);
     const bool busy = job.job != Job::None;
@@ -574,8 +616,7 @@ static const char *startJob(Job j, MotorSide side, DriverOp op, float value) {
         job.step = Step::Send;
         job.stepStartMs = millis();
         job.sawRestart = false;
-        snprintf(job.text, sizeof(job.text), "%s (%s)", j == Job::Swap ? "Swap sides" : opName(op),
-                 j == Job::Swap ? "both" : kSideName[side]);
+        snprintf(job.text, sizeof(job.text), "%s (%s)", opName(op), kSideName[side]);
         job.job = j; // last: the supervisor starts on this
     }
     portEXIT_CRITICAL(&cfgLock);
@@ -590,14 +631,30 @@ const char *requestDriverOp(MotorSide side, DriverOp op, float value) {
         case DriverOp::Save:
         case DriverOp::Reboot:      return startJob(Job::Save, side, op, value);
         case DriverOp::Recalibrate: return startJob(Job::Recalibrate, side, op, value);
+        case DriverOp::SetNodeId: {
+            const int id = (int)lroundf(value);
+            if (id < NODE_ID_MIN || id > NODE_ID_MAX) return "Node IDs are 1-15";
+            if (id == activeNode[side]) return "It's already that node";
+            if (id == activeNode[side ? 0 : 1]) return "That's the other wheel's node";
+            if (nodesHeard() & (1u << id)) return "Another board on the bus already uses that node ID";
+            if (cfg[side].infoKnown && cfg[side].protocol < 3) return "This driver's firmware has no node IDs (needs 1.2)";
+            return startJob(Job::ChangeNode, side, op, value);
+        }
         default:                    return startJob(Job::Simple, side, op, value);
     }
 }
 
+const char *requestDriverNodes(uint8_t l, uint8_t r) {
+    if (balanceState == BalanceState::Balancing) return "Not while it's balancing - pause it or lay it down first";
+    if (l < NODE_ID_MIN || l > NODE_ID_MAX || r < NODE_ID_MIN || r > NODE_ID_MAX) return "Node IDs are 1-15";
+    if (l == r) return "Left and right must be different nodes";
+    Settings::set("leftNode", l);
+    Settings::set("rightNode", r);
+    return nullptr;
+}
+
 const char *requestSwapDriverSides() {
-    if (!cfg[0].infoKnown || !cfg[1].infoKnown || cfg[0].protocol < 2 || cfg[1].protocol < 2)
-        return "Both drivers need firmware 1.1 or later";
-    return startJob(Job::Swap, MOTOR_LEFT, DriverOp::Save, 0);
+    return requestDriverNodes(activeNode[1], activeNode[0]);
 }
 
 void Task_motorSupervisor(void *pvParams) {
@@ -646,7 +703,7 @@ void Task_motorSupervisor(void *pvParams) {
                 lastStartAttemptMs[s] = now;
                 startedOnce[s] = true;
                 DeviceLog::printf("[motor] %s driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
-                sendStartFOC(kCommandId[s]);
+                sendStartFOC(commandId(s));
                 break; // one at a time
             }
         }
@@ -662,6 +719,7 @@ void Task_motorSupervisor(void *pvParams) {
             }
         }
         runJob(now);
+        if (job.job == Job::None) serviceNodeMapping();
         serviceTelemetryRate(now);
 
         vTaskDelay(pdMS_TO_TICKS(100));

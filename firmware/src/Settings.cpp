@@ -139,6 +139,12 @@ const ParamDef kParams[] = {
      "voltage has recovered to 0.3 V above the cutoff. 9.6 V is 3.2 V per cell. 0 disables the "
      "cutoff.",
      [](float) {}, 0},
+    {"leftNode", "Left driver node", "Motor drivers", 1.0f, 1.0f, 15.0f, 1.0f, false,
+     "CAN node ID of the left wheel's driver board. Set on the Drivers tab.",
+     [](float v) { leftNodeSetting = (uint8_t)lroundf(v); }, PARAM_FLAG_HIDDEN},
+    {"rightNode", "Right driver node", "Motor drivers", 2.0f, 1.0f, 15.0f, 1.0f, false,
+     "CAN node ID of the right wheel's driver board. Set on the Drivers tab.",
+     [](float v) { rightNodeSetting = (uint8_t)lroundf(v); }, PARAM_FLAG_HIDDEN},
     {"wheelTlmMs", "Wheel speed reports (ms)", "System", 2.0f, 1.0f, 20.0f, 1.0f, false,
      "How often each motor driver reports its wheel speed. The driver firmware's own default is 10 ms "
      "(100 Hz), so the wheel-speed and position terms only saw a new value every 5th control step; "

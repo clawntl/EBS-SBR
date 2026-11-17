@@ -27,6 +27,9 @@ struct ParamDef {
 constexpr uint8_t PARAM_FLAG_FINE = 1 << 0;
 // Not used by the controller at the moment (shown greyed out).
 constexpr uint8_t PARAM_FLAG_UNUSED = 1 << 1;
+// Not shown with the other settings on the web page (set elsewhere, e.g. the
+// Drivers tab), but saved, loaded and reset like them.
+constexpr uint8_t PARAM_FLAG_HIDDEN = 1 << 2;
 
 namespace Settings {
 

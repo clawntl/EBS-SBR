@@ -99,6 +99,7 @@ void sendSchema(AsyncWebSocketClient *client) {
         if (defs[i].help) p["help"] = defs[i].help;
         if (defs[i].flags & PARAM_FLAG_FINE) p["fine"] = true;
         if (defs[i].flags & PARAM_FLAG_UNUSED) p["unused"] = true;
+        if (defs[i].flags & PARAM_FLAG_HIDDEN) p["hidden"] = true;
     }
     sendJson(doc, client);
 }
@@ -172,12 +173,16 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
     doc["type"] = "drivers";
     doc["job"] = driverJobText();
     doc["balancing"] = balanceState == BalanceState::Balancing;
+    JsonArray heard = doc["heard"].to<JsonArray>(); // node IDs heard on the bus (0 = old "right" board)
+    const uint16_t bits = nodesHeard();
+    for (int n = 0; n <= NODE_ID_MAX; n++) if (bits & (1u << n)) heard.add(n);
     JsonArray arr = doc["d"].to<JsonArray>();
     for (int s = 0; s < 2; s++) {
         const DriverConfigView c = getDriverConfig((MotorSide)s);
         const MotorDriverInfo m = getMotorDriverInfo((MotorSide)s);
         JsonObject o = arr.add<JsonObject>();
         o["link"] = motorLinkName(m.link);
+        o["node"] = driverNode((MotorSide)s);
         o["known"] = c.infoKnown;
         o["old"] = c.noConfigSupport;
         if (c.infoKnown) {
@@ -187,7 +192,7 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
         }
         if (c.activeKnown) {
             JsonObject a = o["active"].to<JsonObject>();
-            a["side"] = c.side;
+            a["node"] = c.node;
             a["invert"] = (c.flags & CFG_FLAG_INVERT) != 0;
             a["cal"] = (c.flags & CFG_FLAG_CALIBRATION) != 0;
             a["ccw"] = (c.flags & CFG_FLAG_SENSOR_DIR_CCW) != 0;
@@ -196,7 +201,7 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
         }
         if (c.pendingKnown) {
             JsonObject p = o["pending"].to<JsonObject>();
-            p["side"] = c.pendSide;
+            p["node"] = c.pendNode;
             p["invert"] = (c.pendFlags & CFG_FLAG_INVERT) != 0;
             p["cal"] = (c.pendFlags & CFG_FLAG_CALIBRATION) != 0;
             o["unsaved"] = (c.pendFlags & CFG_FLAG_UNSAVED) != 0;
@@ -333,6 +338,8 @@ void handleMessage(const uint8_t *data, size_t len) {
         const char *err = "Unknown driver operation";
         if (!strcmp(op, "swap")) {
             err = requestSwapDriverSides();
+        } else if (!strcmp(op, "nodes")) {
+            err = requestDriverNodes(doc["left"] | 0, doc["right"] | 0);
         } else if (side == 0 || side == 1) {
             const MotorSide sd = (MotorSide)side;
             const float v = doc["value"] | 0.0f;
@@ -344,6 +351,7 @@ void handleMessage(const uint8_t *data, size_t len) {
             else if (!strcmp(op, "revert"))   err = requestDriverOp(sd, DriverOp::Revert);
             else if (!strcmp(op, "reboot"))   err = requestDriverOp(sd, DriverOp::Reboot);
             else if (!strcmp(op, "recal"))    err = requestDriverOp(sd, DriverOp::Recalibrate);
+            else if (!strcmp(op, "setNode"))  err = requestDriverOp(sd, DriverOp::SetNodeId, v);
         }
         if (err) sendNotice(err, false);
     } else if (!strcmp(cmd, "wifiScan")) {
@@ -586,6 +594,7 @@ void networkTask(void *) {
     uint32_t seenWifi = WifiManager::version();
     uint32_t seenDrivers = driverConfigVersion(), lastDriversMs = 0;
     bool sentBalancing = false;
+    uint16_t sentHeard = 0;
     uint32_t sentLogSeq = DeviceLog::latest(); // new clients get the backlog on connect
 
     for (;;) {
@@ -620,9 +629,11 @@ void networkTask(void *) {
             // which enables/disables its buttons), at most every 250 ms.
             const uint32_t dv = driverConfigVersion();
             const bool bal = balanceState == BalanceState::Balancing;
-            if ((dv != seenDrivers || bal != sentBalancing) && now - lastDriversMs >= WIFI_BROADCAST_MIN_MS) {
+            const uint16_t heard = nodesHeard();
+            if ((dv != seenDrivers || bal != sentBalancing || heard != sentHeard) && now - lastDriversMs >= WIFI_BROADCAST_MIN_MS) {
                 seenDrivers = dv;
                 sentBalancing = bal;
+                sentHeard = heard;
                 lastDriversMs = now;
                 sendDrivers();
             }

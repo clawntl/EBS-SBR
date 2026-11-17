@@ -18,20 +18,26 @@ static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_1 = 6;
 static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_2 = 1;
 static const uint32_t CAN_ARBITRATION_SJW = 1;
 
-// Acceptance filter: accepts 0x100, 0x101, 0x102, 0x103
+// Acceptance filter: driver telemetry 0x100-0x10F (0x100 itself is where a
+// firmware 1.0/1.1 "right" board still reports, so it can be spotted).
 static const uint32_t CAN_RX_FILTER_ID = 0x100;
-static const uint32_t CAN_RX_FILTER_MASK = 0x7FC;
+static const uint32_t CAN_RX_FILTER_MASK = 0x7F0;
 
 // ----------------------------------------------
-// Node addresses
+// Node IDs (driver CAN protocol 3, firmware 1.2+)
 // ----------------------------------------------
-#define BOTH_MOTOR_CAN_ADDR     0x020
-#define LEFT_MOTOR_CAN_ADDR     0x021
-#define RIGHT_MOTOR_CAN_ADDR    0x022
-
-// Shaft velocity broadcast IDs (sent by the motor controllers)
-#define RIGHT_MOTOR_VELOCITY_CAN_ID   0x100
-#define LEFT_MOTOR_VELOCITY_CAN_ID    0x101
+// Each driver board has a node ID n = 1..15 (see BLDC-Driver
+// docs/can-protocol.md). Which nodes are this robot's left and right wheels
+// is set by the leftNode / rightNode settings (defaults 1 and 2).
+//   current frame  0x010 + (n-1)/2, 8 bytes = two floats: odd n bytes 0-3,
+//                  even n bytes 4-7; NaN = no command for that node
+//   commands       0x020 + n
+//   telemetry      0x100 + n
+#define CURRENT_FRAME_BASE  0x010
+#define COMMAND_ID_BASE     0x020
+#define TELEMETRY_ID_BASE   0x100
+#define NODE_ID_MIN         1
+#define NODE_ID_MAX         15
 
 // ----------------------------------------------
 // Standard message command byte
@@ -68,7 +74,7 @@ enum CAN_CMD : uint8_t {
 };
 
 enum DriverParam : uint8_t {
-    PARAM_SIDE   = 1,    // saved: 1 = left, 2 = right
+    PARAM_NODE_ID = 1,   // saved: 1-15 (protocol 2: 1 = left, 2 = right)
     PARAM_INVERT = 2,    // saved: 0 / 1
     PARAM_VELOCITY_INTERVAL_MS = 0x10, // runtime: velocity telemetry period, 1-100 ms
 };

@@ -46,11 +46,11 @@ struct DriverConfigView {
     uint8_t fwMajor, fwMinor, fwPatch;
     uint8_t imageKB;
     bool    activeKnown;    // settings in use
-    uint8_t side;           // 1 = left, 2 = right
+    uint8_t node;           // node ID (protocol 2 firmware: 1 = left, 2 = right)
     uint8_t flags;          // CFG_FLAG_*
     float   zeroAngle;      // rad, if CFG_FLAG_CALIBRATION
     bool    pendingKnown;   // settings after the next save
-    uint8_t pendSide;
+    uint8_t pendNode;
     uint8_t pendFlags;
     char    result[72];     // outcome of the last operation, "" = none
 };
@@ -64,6 +64,7 @@ enum class DriverOp : uint8_t {
     Revert,       // discard unsaved changes
     Reboot,
     Recalibrate,  // clear + save, let it align on the next start, store + save
+    SetNodeId,    // value = new node ID: set + save (driver reboots), then use it
 };
 
 DriverConfigView getDriverConfig(MotorSide side);
@@ -74,9 +75,23 @@ const char *driverJobText();
 
 // Starts an operation. Returns nullptr if started, otherwise why not.
 const char *requestDriverOp(MotorSide side, DriverOp op, float value = 0);
-// Swaps the two boards' sides (both set + saved together, so their CAN IDs
-// swap; doing one at a time would leave both on the same IDs).
+// Swaps which node is left and which is right (this robot's leftNode /
+// rightNode settings; nothing is written to the drivers).
 const char *requestSwapDriverSides();
+// Uses these nodes as the left and right drivers (saved).
+const char *requestDriverNodes(uint8_t leftNode, uint8_t rightNode);
+
+// ---- Node IDs ----
+// Node ID in use for each side (CAN IDs: see CANConfig.h).
+uint8_t driverNode(MotorSide side);
+// Wanted node IDs, from the leftNode / rightNode settings. Taken into use by
+// the supervisor when the robot isn't balancing (and they differ).
+extern uint8_t leftNodeSetting, rightNodeSetting;
+// Called by the CAN receive task for every heartbeat, from any node
+// (0 = a firmware 1.0/1.1 "right" board, which reports on 0x100).
+void noteNodeHeard(uint8_t node, uint8_t state);
+// Nodes heard in the last 2 s: bit n set = node n (bit 0 = old "right" board).
+uint16_t nodesHeard();
 
 // Velocity telemetry period [ms] asked of the drivers (runtime setting on the
 // driver, re-sent whenever a driver starts running). 0 = leave at its default.
