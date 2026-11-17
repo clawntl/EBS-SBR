@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Battery.h"
+#include "CANConfig.h"
 #include "Capture.h"
 #include "Config.h"
 #include "DeviceLog.h"
@@ -165,6 +166,47 @@ void sendLog(uint32_t after, AsyncWebSocketClient *client = nullptr) {
     if (lines.size()) sendJson(doc, client);
 }
 
+// Motor driver firmware/settings (Drivers tab).
+void sendDrivers(AsyncWebSocketClient *client = nullptr) {
+    JsonDocument doc;
+    doc["type"] = "drivers";
+    doc["job"] = driverJobText();
+    doc["balancing"] = balanceState == BalanceState::Balancing;
+    JsonArray arr = doc["d"].to<JsonArray>();
+    for (int s = 0; s < 2; s++) {
+        const DriverConfigView c = getDriverConfig((MotorSide)s);
+        const MotorDriverInfo m = getMotorDriverInfo((MotorSide)s);
+        JsonObject o = arr.add<JsonObject>();
+        o["link"] = motorLinkName(m.link);
+        o["known"] = c.infoKnown;
+        o["old"] = c.noConfigSupport;
+        if (c.infoKnown) {
+            o["proto"] = c.protocol;
+            o["fw"] = String(c.fwMajor) + "." + c.fwMinor + "." + c.fwPatch;
+            o["kb"] = c.imageKB;
+        }
+        if (c.activeKnown) {
+            JsonObject a = o["active"].to<JsonObject>();
+            a["side"] = c.side;
+            a["invert"] = (c.flags & CFG_FLAG_INVERT) != 0;
+            a["cal"] = (c.flags & CFG_FLAG_CALIBRATION) != 0;
+            a["ccw"] = (c.flags & CFG_FLAG_SENSOR_DIR_CCW) != 0;
+            a["zero"] = c.zeroAngle;
+            o["unsaved"] = (c.flags & CFG_FLAG_UNSAVED) != 0;
+        }
+        if (c.pendingKnown) {
+            JsonObject p = o["pending"].to<JsonObject>();
+            p["side"] = c.pendSide;
+            p["invert"] = (c.pendFlags & CFG_FLAG_INVERT) != 0;
+            p["cal"] = (c.pendFlags & CFG_FLAG_CALIBRATION) != 0;
+            o["unsaved"] = (c.pendFlags & CFG_FLAG_UNSAVED) != 0;
+        }
+        o["calUsed"] = (m.flags & DRIVER_FLAG_CALIBRATION_USED) != 0;
+        o["result"] = c.result;
+    }
+    sendJson(doc, client);
+}
+
 void sendNotice(const String &text, bool ok = true) {
     JsonDocument doc;
     doc["type"] = "notice";
@@ -285,6 +327,25 @@ void handleMessage(const uint8_t *data, size_t len) {
     } else if (!strcmp(cmd, "motorRetry")) {
         resetMotorStartAttempts();
         DeviceLog::println("[web] motor start attempts reset");
+    } else if (!strcmp(cmd, "driver")) {
+        const int side = doc["side"] | -1;
+        const char *op = doc["op"] | "";
+        const char *err = "Unknown driver operation";
+        if (!strcmp(op, "swap")) {
+            err = requestSwapDriverSides();
+        } else if (side == 0 || side == 1) {
+            const MotorSide sd = (MotorSide)side;
+            const float v = doc["value"] | 0.0f;
+            if      (!strcmp(op, "refresh"))  err = requestDriverOp(sd, DriverOp::Refresh);
+            else if (!strcmp(op, "invert"))   err = requestDriverOp(sd, DriverOp::SetInvert, v);
+            else if (!strcmp(op, "calStore")) err = requestDriverOp(sd, DriverOp::CalStore);
+            else if (!strcmp(op, "calClear")) err = requestDriverOp(sd, DriverOp::CalClear);
+            else if (!strcmp(op, "save"))     err = requestDriverOp(sd, DriverOp::Save);
+            else if (!strcmp(op, "revert"))   err = requestDriverOp(sd, DriverOp::Revert);
+            else if (!strcmp(op, "reboot"))   err = requestDriverOp(sd, DriverOp::Reboot);
+            else if (!strcmp(op, "recal"))    err = requestDriverOp(sd, DriverOp::Recalibrate);
+        }
+        if (err) sendNotice(err, false);
     } else if (!strcmp(cmd, "wifiScan")) {
         WifiManager::requestScan();
     } else if (!strcmp(cmd, "wifiConnect")) {
@@ -312,6 +373,7 @@ void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type
         sendSchema(client);
         sendSettings(client);
         sendWifi(client);
+        sendDrivers(client);
         sendLog(0, client); // backlog
     } else if (type == WS_EVT_DISCONNECT) {
         DeviceLog::printf("[ws] client #%lu disconnected\n", (unsigned long)client->id());
@@ -522,6 +584,8 @@ void networkTask(void *) {
     uint32_t lastTelemetryMs = 0, lastSettingsMs = 0, lastWifiMs = 0, lastCleanupMs = 0;
     uint32_t seenSettings = Settings::version();
     uint32_t seenWifi = WifiManager::version();
+    uint32_t seenDrivers = driverConfigVersion(), lastDriversMs = 0;
+    bool sentBalancing = false;
     uint32_t sentLogSeq = DeviceLog::latest(); // new clients get the backlog on connect
 
     for (;;) {
@@ -551,6 +615,16 @@ void networkTask(void *) {
             if (logSeq != sentLogSeq && ws.availableForWriteAll()) {
                 sendLog(sentLogSeq);
                 sentLogSeq = logSeq;
+            }
+            // Drivers tab: on any change (and when balancing starts/stops,
+            // which enables/disables its buttons), at most every 250 ms.
+            const uint32_t dv = driverConfigVersion();
+            const bool bal = balanceState == BalanceState::Balancing;
+            if ((dv != seenDrivers || bal != sentBalancing) && now - lastDriversMs >= WIFI_BROADCAST_MIN_MS) {
+                seenDrivers = dv;
+                sentBalancing = bal;
+                lastDriversMs = now;
+                sendDrivers();
             }
             const uint32_t wv = WifiManager::version();
             if (wv != seenWifi && now - lastWifiMs >= WIFI_BROADCAST_MIN_MS) {

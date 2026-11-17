@@ -59,6 +59,16 @@ void sendStartFOC(uint32_t canID) {
     can0.tryToSend(txMsg);
 }
 
+void sendDriverCommand(uint32_t canID, const uint8_t *data, uint8_t len) {
+    CANMessage txMsg;
+    txMsg.id = canID;
+    txMsg.ext = false;
+    txMsg.rtr = false;
+    txMsg.len = len > 8 ? 8 : len;
+    memcpy(txMsg.data, data, txMsg.len);
+    can0.tryToSend(txMsg);
+}
+
 // Send a message with float datatype
 void sendFloat(uint8_t cmd, float dat, uint32_t canID) {
     uint8_t floatData[4]; // Stores a single float (4 bytes)
@@ -129,6 +139,16 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
             handleDriverStartReply(side, bytes2floatMSB(rxMsg.data + 1) > 0.5f);
             break;
         }
+        case CMD_GET_INFO:
+        case CMD_GET_CONFIG:
+        case CMD_SET_PARAM:
+        case CMD_CALIBRATION:
+        case CMD_SAVE:
+        case CMD_REVERT:
+        case CMD_REBOOT:
+        case CMD_NACK:
+            handleDriverConfigReply(side, rxMsg.data, rxMsg.len);
+            break;
         case CMD_ERROR: {
             if (rxMsg.len < 5) return;
             handleDriverError(side, (uint8_t)bytes2floatMSB(rxMsg.data + 1));

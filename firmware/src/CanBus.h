@@ -13,6 +13,8 @@ extern bool canBusOk;
 bool initCanBus();
 
 void sendStartFOC(uint32_t canID);
+// Sends a command frame ([cmd][payload...], up to 8 bytes) to a driver.
+void sendDriverCommand(uint32_t canID, const uint8_t *data, uint8_t len);
 void sendFloat(uint8_t cmd, float dat, uint32_t canID);
 void sendMotorCurrents(float leftCur, float rightCur, uint32_t canID);
 

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "Config.h"
+#include "MotorDrivers.h"
 #include "RobotParams.h"
 
 namespace {
@@ -138,6 +139,13 @@ const ParamDef kParams[] = {
      "voltage has recovered to 0.3 V above the cutoff. 9.6 V is 3.2 V per cell. 0 disables the "
      "cutoff.",
      [](float) {}, 0},
+    {"wheelTlmMs", "Wheel speed reports (ms)", "System", 2.0f, 1.0f, 20.0f, 1.0f, false,
+     "How often each motor driver reports its wheel speed. The driver firmware's own default is 10 ms "
+     "(100 Hz), so the wheel-speed and position terms only saw a new value every 5th control step; "
+     "2 ms matches the 500 Hz control rate. The CAN bus is then about 20% busy. Needs driver "
+     "firmware 1.1 or later (older firmware keeps 10 ms); applies when a driver (re)starts or this "
+     "changes.",
+     [](float v) { wheelTelemetryMs = (uint8_t)lroundf(v); }, 0},
     {"recEvery", "Record every Nth step", "System", 1.0f, 1.0f, 20.0f, 1.0f, false,
      "Recordings normally keep every control step (up to about 60 s at 500 Hz, 30 s at 1000 Hz). "
      "2 keeps every other step and doubles the longest recording, and so on. Applies to the next "

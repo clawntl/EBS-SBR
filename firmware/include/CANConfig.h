@@ -51,8 +51,43 @@ enum CAN_CMD : uint8_t {
     // finished: [0x10][float 1.0 = ok, 0.0 = failed]
     CMD_START_FOC = 0x10,
 
+    // ---- Configuration (driver CAN protocol 2, firmware 1.1+) -------------
+    // Host -> driver on its command ID; the reply comes back on its telemetry
+    // ID with the same command byte. See BLDC-Driver docs/can-protocol.md.
+    CMD_GET_INFO    = 0x20, // -> [0x20][protocol][major][minor][patch][image KB][0][0]
+    CMD_GET_CONFIG  = 0x21, // [0x21][0 active / 1 pending] -> [0x21][which][side][CFG_FLAG_*][zero angle f32]
+    CMD_SET_PARAM   = 0x22, // [0x22][param][f32] -> [0x22][param][status][f32 now]
+    CMD_CALIBRATION = 0x23, // [0x23][CAL_*] -> [0x23][op][status]
+    CMD_SAVE        = 0x24, // -> [0x24][status], then save + reboot
+    CMD_REVERT      = 0x25, // -> [0x25][status]
+    CMD_REBOOT      = 0x26, // -> [0x26][status], then reboot
+    CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
+
     // Driver -> host: [0xFF][float error code (DriverError)]
     CMD_ERROR = 0xFF,
+};
+
+enum DriverParam : uint8_t {
+    PARAM_SIDE   = 1,    // saved: 1 = left, 2 = right
+    PARAM_INVERT = 2,    // saved: 0 / 1
+    PARAM_VELOCITY_INTERVAL_MS = 0x10, // runtime: velocity telemetry period, 1-100 ms
+};
+
+enum DriverCalOp : uint8_t { CAL_STORE = 1, CAL_CLEAR = 2 };
+
+enum DriverConfigStatus : uint8_t {
+    CONFIG_OK              = 0,
+    CONFIG_ERR_UNKNOWN     = 1,
+    CONFIG_ERR_BAD_VALUE   = 2,
+    CONFIG_ERR_NOT_ALIGNED = 3,
+    CONFIG_ERR_FLASH       = 4,
+};
+
+enum DriverConfigFlag : uint8_t {
+    CFG_FLAG_INVERT         = 1 << 0,
+    CFG_FLAG_CALIBRATION    = 1 << 1,
+    CFG_FLAG_SENSOR_DIR_CCW = 1 << 2,
+    CFG_FLAG_UNSAVED        = 1 << 3,
 };
 
 enum DriverState : uint8_t {

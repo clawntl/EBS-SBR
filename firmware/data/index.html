@@ -270,6 +270,7 @@
     <nav class="tabs" role="tablist">
       <button type="button" class="tab" role="tab" data-tab="tune">Tune</button>
       <button type="button" class="tab" role="tab" data-tab="control">Control</button>
+      <button type="button" class="tab" role="tab" data-tab="drivers">Drivers</button>
       <button type="button" class="tab" role="tab" data-tab="wifi">WiFi</button>
       <button type="button" class="tab" role="tab" data-tab="log">Log <span class="count" id="logCount"></span></button>
       <button type="button" class="tab" role="tab" data-tab="info">Info</button>
@@ -399,6 +400,38 @@
   </section>
 
   <!-- ===================== WiFi ===================== -->
+  <!-- ===================== Drivers ===================== -->
+  <section class="tabpage" id="tab-drivers" hidden>
+    <p class="muted" id="drvJob">&nbsp;</p>
+    <div class="pair-row">
+      <div class="panel">
+        <h2>Left driver <button class="small" data-drv="0" data-op="refresh">Refresh</button></h2>
+        <table class="ref" id="drvInfo0"></table>
+        <div class="actions" id="drvActions0"></div>
+        <p class="muted" id="drvResult0"></p>
+      </div>
+      <div class="panel">
+        <h2>Right driver <button class="small" data-drv="1" data-op="refresh">Refresh</button></h2>
+        <table class="ref" id="drvInfo1"></table>
+        <div class="actions" id="drvActions1"></div>
+        <p class="muted" id="drvResult1"></p>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>About</h2>
+      <p class="muted">Settings on the motor driver boards themselves, changed over CAN (driver firmware 1.1 or later;
+        older firmware is set up over USB serial). <b>Invert</b> and the alignment are pending until <b>Save &amp;
+        reboot</b>, which stops that motor, writes the driver's flash and restarts it. Nothing here works while the
+        robot is balancing - pause it or lay it down first.</p>
+      <p class="muted"><b>Re-run alignment</b> finds the angle between the motor's magnet sensor and its windings
+        again (needed after the motor, magnet or sensor is remounted). The driver reboots twice and the wheel turns a
+        little, so lay the robot on its side or lift that wheel.</p>
+      <div class="actions"><button id="drvSwap">Swap sides</button></div>
+      <p class="muted">Swaps which board is left and which is right (both are changed and saved together, so their CAN
+        addresses swap) - for boards that were set up the wrong way round.</p>
+    </div>
+  </section>
+
   <section class="tabpage" id="tab-wifi" hidden>
     <div class="pair-row">
       <div class="panel">
@@ -485,8 +518,10 @@
           <table class="ref">
             <tr><td>Power on</td><td>Leave it lying still. WiFi comes up within a few seconds, then the motor drivers
               start, then the gyro is zeroed (status LED: 3 slow purple flashes, then 3 quick ones when done).</td></tr>
-            <tr><td>Balancing</td><td>Stand it upright: it balances whenever it's within the cut-out angle of upright,
-              the drivers are running and it isn't paused. Lay it down (or let it fall) and the motors switch off.</td></tr>
+            <tr><td>Balancing</td><td>Stand it upright and hold it still for a moment: it starts once it's within the
+              start angle of the set point and steady, then balances until it tips past the cut-out angle. Lay it down
+              (or let it fall) and the motors switch off. If the wheels spin up (lifted, or after a crash) it stops
+              and waits to be stood up again.</td></tr>
             <tr><td>Pause</td><td>Holds the motors at 0 A until resumed (not saved: it's balancing again after a restart).</td></tr>
             <tr><td>Low battery</td><td>Below the battery cutoff (Tune tab, System) it stops balancing until the pack
               is charged or swapped.</td></tr>
@@ -602,7 +637,7 @@ $("logClear").onclick = () => { $("log").textContent = ""; };
 // ---------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------
-const TABS = ["tune", "control", "wifi", "log", "info"];
+const TABS = ["tune", "control", "drivers", "wifi", "log", "info"];
 let currentTab = "tune";
 function showTab(name) {
   if (!TABS.includes(name)) name = "tune";
@@ -1680,6 +1715,78 @@ $("copyAddr").onclick = () => {
 // ---------------------------------------------------------------------
 // Message handlers
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Drivers tab
+// ---------------------------------------------------------------------
+let driversMsg = null;
+
+function renderDrivers(m) {
+  driversMsg = m;
+  const busy = !!m.job;
+  setText($("drvJob"), m.job ? "Working: " + m.job : m.balancing ? "Balancing - pause it or lay it down to change driver settings." : "\u00a0");
+  m.d.forEach((d, i) => {
+    const sideName = (v) => v === 1 ? "left" : v === 2 ? "right" : "not set";
+    const rows = [["State", d.link]];
+    if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)`]);
+    else if (d.old) rows.push(["Firmware", "1.0 or older: settings over CAN need 1.1 (update over USB)"]);
+    else rows.push(["Firmware", "-"]);
+    const a = d.active, p = d.pending;
+    if (a) {
+      const pendNote = (now, next) => (p && next !== now) ? ` \u2192 ${next} after save` : "";
+      rows.push(["Side", sideName(a.side) + pendNote(sideName(a.side), p && sideName(p.side))]);
+      rows.push(["Direction", (a.invert ? "inverted" : "normal") + pendNote(a.invert ? "inverted" : "normal", p && (p.invert ? "inverted" : "normal"))]);
+      const calNow = a.cal ? `stored (${a.ccw ? "CCW" : "CW"}, ${a.zero.toFixed(3)} rad)` : "none: aligns at every start";
+      rows.push(["Alignment", calNow + (p && p.cal !== a.cal ? (p.cal ? " \u2192 new one after save" : " \u2192 cleared after save") : "")
+        + (a.cal ? (d.calUsed ? ", used at the last start" : ", not used at the last start") : "")]);
+    }
+    const t = $("drvInfo" + i);
+    t.innerHTML = "";
+    for (const [k, v] of rows) {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td"), td2 = document.createElement("td");
+      td1.textContent = k; td2.textContent = v;
+      tr.append(td1, td2);
+      t.appendChild(tr);
+    }
+    const can = d.known && d.proto >= 2 && !busy && !m.balancing;
+    const acts = $("drvActions" + i);
+    acts.innerHTML = "";
+    const btn = (label, op, opts = {}) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (opts.cls) b.className = opts.cls;
+      b.disabled = !can || opts.disabled;
+      b.onclick = async () => {
+        if (opts.ask && !(await ask(opts.ask, opts.okLabel || label, !!opts.danger))) return;
+        send({ cmd: "driver", side: i, op, value: opts.value });
+      };
+      acts.appendChild(b);
+    };
+    if (a) {
+      const inv = p ? p.invert : a.invert;
+      btn(inv ? "Normal direction" : "Invert direction", "invert", { value: inv ? 0 : 1,
+        ask: "Flipping this wheel's direction makes the balance controller push it the wrong way unless the motor " +
+             "is mounted or wired differently from the other one. It takes effect after Save & reboot. Change it?" });
+      btn("Save & reboot", "save", { cls: d.unsaved ? "primary" : "", disabled: !d.unsaved });
+      btn("Revert", "revert", { disabled: !d.unsaved });
+      btn("Re-run alignment", "recal", { ask: "The " + (i ? "right" : "left") + " driver reboots twice and its wheel " +
+        "turns a little while it aligns (about 15 s). Lay the robot on its side or lift that wheel first.", okLabel: "Align" });
+      btn("Reboot", "reboot");
+    }
+    setText($("drvResult" + i), d.result || "");
+  });
+  $("drvSwap").disabled = busy || m.balancing || !m.d.every((d) => d.known && d.proto >= 2);
+}
+
+document.querySelectorAll("[data-drv]").forEach((b) => {
+  b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
+});
+$("drvSwap").onclick = async () => {
+  if (!(await ask("Swap which board is left and which is right? Both drivers are changed, saved and rebooted " +
+                  "together. Only do this if the wheels respond to the wrong side's commands.", "Swap", true))) return;
+  send({ cmd: "driver", op: "swap" });
+};
+
 const handlers = {
   info(m) {
     robotName = m.name;
@@ -1693,6 +1800,7 @@ const handlers = {
   },
   log(m) { deviceLog(m.boot, m.lines); },
   wifi: (m) => renderWifi(m),
+  drivers: (m) => renderDrivers(m),
   schema(m) { buildSettings(m.params); },
   settings(m) {
     applySettings(m.values);
