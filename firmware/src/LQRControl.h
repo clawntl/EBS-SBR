@@ -23,6 +23,8 @@ enum class BalanceState : uint8_t {
     Tipped,         // tilt beyond deactivationAngle -> 0 A
     BatteryLow,     // battery below the cutoff (Battery::isLow()) -> 0 A
     Balancing,
+    Waiting,        // within the cut-out angle but not started: hold it upright and still -> 0 A
+    Runaway,        // stopped: wheels spun faster than runawaySpeed (lifted?) -> 0 A until restarted
 };
 extern volatile BalanceState balanceState;
 
@@ -34,7 +36,7 @@ struct ControlSample {
     uint32_t timeUs;      // micros() at the step
     float tilt;           // [deg] theta[2] (0 = upright by the IMU)
     float tiltRate;       // [deg/s]
-    float setpoint;       // [deg] angleSetPoint
+    float setpoint;       // [deg] set point in use (angleSetPoint + learned trim)
     float phi;            // [rad] wheel angle, integrated from phiDot
     float phiDot;         // [rad/s] average of both wheels' speed (negative = rolling forward)
     float yawRate;        // [deg/s] positive = the way a positive yawCur turns it
@@ -60,6 +62,11 @@ struct ControlSample {
 
 // Latest step plus the measured control loop rate [Hz].
 ControlSample getControlSnapshot(uint16_t *loopHz = nullptr);
+
+// Publishes the learned set point trim to Settings (about once a second)
+// and saves it to flash once the robot stops balancing. Call regularly from
+// a core-0 task (the network task does).
+void serviceSetPointTrim();
 
 // Runs once per IMU sample (woken by Task_BMI160), computes the wheel
 // currents and sends them over CAN immediately.

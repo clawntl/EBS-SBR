@@ -37,6 +37,8 @@ const char *balanceName(BalanceState s) {
         case BalanceState::MotorsNotReady: return "MOTORS OFF";
         case BalanceState::ImuStalled:     return "IMU STALL";
         case BalanceState::BatteryLow:     return "BATT LOW";
+        case BalanceState::Waiting:        return "HOLD UPRIGHT";
+        case BalanceState::Runaway:        return "RUNAWAY";
     }
     return "?";
 }

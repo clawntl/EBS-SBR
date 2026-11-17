@@ -14,7 +14,8 @@ namespace {
 // its controls from this table (sent as a "schema" message), so adding a
 // parameter only needs an entry here plus wherever the firmware uses it.
 //
-// Defaults are the values that were hard-coded in RobotParams.cpp.
+// Defaults: the tune from the 2026-11-16 tests (gains, set point, hold and turn);
+// the rest are the values that were hard-coded in RobotParams.cpp.
 const ParamDef kParams[] = {
     // ---- Balance gains (LQR) -------------------------------------------------
     {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -10.0f, -30.0f, 30.0f, 0.01f, false,
@@ -27,22 +28,44 @@ const ParamDef kParams[] = {
      "little and it overshoots and wobbles; too much makes it twitchy and noisy, because it "
      "amplifies gyro noise.",
      [](float v) { K[4] = v; }, 0},
-    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.05f, -2.0f, 2.0f, 0.001f, false,
+    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.08f, -2.0f, 2.0f, 0.001f, false,
      "Feedback on the wheels' own speed (the average reported by both motor drivers). Stops the "
      "robot rolling away at a steady speed; too much fights the balancing and makes it slow and "
      "swaying.",
      [](float v) { K[3] = v; }, 0},
     // ---- Balance ----------------------------------------------------------------
-    {"setpoint", "Angle set point (deg)", "Balance", 2.0f, -20.0f, 20.0f, 0.01f, false,
+    {"setpoint", "Angle set point (deg)", "Balance", 1.5f, -20.0f, 20.0f, 0.01f, false,
      "The tilt reading at which the robot is exactly balanced. It isn't 0 because the IMU isn't "
      "mounted perfectly level and the weight isn't exactly over the axle. If it balances but keeps "
      "creeping in one direction, nudge this until it stays put; use the fine-adjust slider for "
      "small steps.",
      [](float v) { angleSetPoint = v * DEG_TO_RAD; }, PARAM_FLAG_FINE},
+    {"learnTrim", "Learn set point trim (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "When on, the robot works out the exact balance angle itself while it stands still (no "
+     "drive input, not being pushed): if it keeps leaning one way, the trim below creeps towards "
+     "that lean, so the position hold doesn't have to keep pulling against it. It takes about "
+     "half a minute to settle and follows slow changes (battery position, a slope). The learned "
+     "trim saves itself once the robot stops balancing.",
+     [](float v) { learnTrim = v > 0.5f; }, 0},
+    {"spTrim", "Set point trim (deg)", "Balance", 0.0f, -5.0f, 5.0f, 0.01f, false,
+     "Learned correction added to the angle set point (shown live as the set point on the "
+     "charts). Set it to 0 to start learning again from scratch, e.g. after moving the battery.",
+     [](float v) { setPointTrim = v * DEG_TO_RAD; }, 0},
     {"deactAngle", "Cut-out angle (deg)", "Balance", 42.0f, 0.0f, 90.0f, 1.0f, false,
      "If the robot tilts more than this from upright it has fallen over, and the motors are set to "
-     "0 A. Balancing starts again by itself once it's stood back up within this angle.",
+     "0 A. To start again, stand it up within the start angle below and hold it still.",
      [](float v) { deactivationAngle = v; }, 0},
+    {"engageAngle", "Start angle (deg)", "Balance", 10.0f, 2.0f, 40.0f, 1.0f, false,
+     "Balancing only starts once the robot is within this angle of the set point AND held still "
+     "(not swinging, wheels stopped) for 0.3 s. Then it keeps going until it passes the cut-out "
+     "angle. Stops it starting mid-lift with the wheels in the air, which spins them up to full "
+     "speed before it touches the ground.",
+     [](float v) { engageAngle = v; }, 0},
+    {"runawaySpeed", "Runaway wheel speed (rad/s)", "Balance", 60.0f, 20.0f, 200.0f, 5.0f, false,
+     "If the wheels spin faster than this for 0.3 s while balancing (it has been lifted, or a crash "
+     "left the wheels spinning freely) the motors stop until it's stood up and held still again. "
+     "Never lower than 1.5x the top speed, whatever this says.",
+     [](float v) { runawaySpeed = v; }, 0},
     {"alpha", "Gyro trust (filter alpha)", "Balance", 0.998f, 0.9f, 1.0f, 0.0001f, false,
      "The tilt angle combines the gyro (smooth and fast, but drifts) with the accelerometer (no "
      "drift, but upset by movement and vibration). Higher trusts the gyro more. At 500 Hz, 0.998 "
@@ -56,20 +79,20 @@ const ParamDef kParams[] = {
      [](float v) { IMUsampleRate = (uint16_t)lroundf(v); }, 0},
 
     // ---- Position & heading hold ---------------------------------------------------
-    {"K0", "Wheel position (K0)", "Position & heading hold", 0.0f, -2.0f, 2.0f, 0.001f, false,
+    {"K0", "Wheel position (K0)", "Position & heading hold", -0.05f, -2.0f, 2.0f, 0.001f, false,
      "Holds the robot's position: current per radian of wheel rotation away from where it should "
      "be (where it started balancing, moved along by the drive input). Same sign as K3. 0 = off "
      "(it then only resists speed, so it creeps). Start small (e.g. -0.005) and increase until it "
      "returns to its spot after a nudge without a slow sway; too much makes it rock back and "
      "forth.",
      [](float v) { K[0] = v; }, 0},
-    {"K2", "Heading (K2)", "Position & heading hold", 0.0f, -2.0f, 2.0f, 0.01f, false,
+    {"K2", "Heading (K2)", "Position & heading hold", 0.3f, -2.0f, 2.0f, 0.01f, false,
      "Holds the heading: differential current [A] per radian the robot has turned away from the "
      "heading it should have. Stops the slow spin from left/right motor differences. Needs 'Yaw "
      "direction' set correctly first; positive values hold, negative ones push it further round. "
      "0 = off. Start around 0.05.",
      [](float v) { K[2] = v; }, 0},
-    {"K5", "Turn rate (K5)", "Position & heading hold", 0.0f, -1.0f, 1.0f, 0.001f, false,
+    {"K5", "Turn rate (K5)", "Position & heading hold", 0.2f, -1.0f, 1.0f, 0.001f, false,
      "Damps turning: differential current [A] per rad/s of yaw rate away from the requested turn "
      "rate. Positive damps; too much buzzes or wobbles in yaw. 0 = off. Start around 0.02, then "
      "add K2.",
@@ -101,7 +124,7 @@ const ParamDef kParams[] = {
     {"maxTurn", "Turn rate (deg/s)", "Driving", 90.0f, 0.0f, 360.0f, 5.0f, false,
      "Turn rate requested at full left/right.",
      [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},
-    {"turnGain", "Turn feed-forward (A)", "Driving", 0.15f, 0.0f, 1.0f, 0.01f, false,
+    {"turnGain", "Turn feed-forward (A)", "Driving", 0.1f, 0.0f, 1.0f, 0.01f, false,
      "Differential current added straight away at full left/right (taken from one wheel, added "
      "to the other), so turns start without waiting for the turn-rate error to build. The "
      "heading-hold gains (K2, K5) then correct it to the requested rate. With K2 and K5 at 0 this "
@@ -170,6 +193,15 @@ const ParamDef *params(size_t &count) {
 const ParamDef *find(const char *key) {
     const int i = indexOf(key);
     return i < 0 ? nullptr : &kParams[i];
+}
+
+float savedValue(const char *key) {
+    const int i = indexOf(key);
+    if (i < 0) return NAN;
+    portENTER_CRITICAL(&lock);
+    const float v = saved[i];
+    portEXIT_CRITICAL(&lock);
+    return v;
 }
 
 float value(const char *key) {
@@ -246,6 +278,23 @@ bool save() {
         portENTER_CRITICAL(&lock);
         memcpy(saved, values, sizeof(saved));
         changeCounter = changeCounter + 1; // dirty flag changed
+        portEXIT_CRITICAL(&lock);
+    }
+    return ok;
+}
+
+bool saveKey(const char *key) {
+    const int i = indexOf(key);
+    if (i < 0) return false;
+    const float v = valueAt((size_t)i);
+    Preferences prefs;
+    if (!prefs.begin(NVS_NAMESPACE, false)) return false;
+    const bool ok = prefs.putFloat(kParams[i].key, v) == sizeof(float);
+    prefs.end();
+    if (ok) {
+        portENTER_CRITICAL(&lock);
+        saved[i] = v;
+        changeCounter = changeCounter + 1; // dirty flag may have changed
         portEXIT_CRITICAL(&lock);
     }
     return ok;

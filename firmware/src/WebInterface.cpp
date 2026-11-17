@@ -532,6 +532,7 @@ void networkTask(void *) {
         ArduinoOTA.handle();
         runPendingActions();
         Battery::update(Settings::value("battCutoff"));
+        serviceSetPointTrim();
 
         if (ws.count()) {
             const uint32_t telemetryMs = (uint32_t)Settings::value("telemetryMs");

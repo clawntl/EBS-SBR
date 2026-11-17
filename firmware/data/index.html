@@ -915,9 +915,10 @@ function setTile(id, text, cls = "") {
 const STATE_TEXT = {
   "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
   "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
+  "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
 };
 const STATE_CLASS = {
-  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad",
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad",
 };
 const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
 

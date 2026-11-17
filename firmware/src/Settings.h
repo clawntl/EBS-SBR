@@ -55,6 +55,12 @@ void resetToDefaults();
 void load();
 bool save();
 
+// Writes just one parameter to flash (same stall as save(), but leaves any
+// other unsaved changes unsaved). Used for the learned set point trim.
+bool saveKey(const char *key);
+// Value last saved to flash (NAN for an unknown key).
+float savedValue(const char *key);
+
 // True if the live settings differ from what is stored in flash.
 bool isDirty();
 

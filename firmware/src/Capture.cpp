@@ -92,6 +92,8 @@ const char *stateCsvName(uint8_t s) {
     case BalanceState::Tipped:         return "tipped";
     case BalanceState::BatteryLow:     return "battery-low";
     case BalanceState::Balancing:      return "balancing";
+    case BalanceState::Waiting:        return "waiting";
+    case BalanceState::Runaway:        return "runaway";
     }
     return "?";
 }
@@ -222,7 +224,7 @@ bool CsvReader::nextLine() {
         pending += "# controller: lqr = -(K0*pos_err + K1*(tilt-setpoint) + K3*(phi_dot-speed_ref) + K4*tilt_rate) [A, total]; "
                    "yaw_cur = turnGain*joy_x - (K2*head_err + K5*(yaw_rate-yaw_rate_ref)) [A]; "
                    "cur_l/cur_r = lqr/2 +- yaw_cur, each within +-1 A (balance first), 0 unless balancing\n";
-        pending += "# units: deg, deg/s, rad, rad/s, A, g; tilt = roll from the IMU filter, phi = wheel angle (avg of both), "
+        pending += "# units: deg, deg/s, rad, rad/s, A, g; tilt = roll from the IMU filter, setpoint = set point + learned trim, phi = wheel angle (avg of both), "
                    "heading/pos_err/head_err reset when balancing starts; gx..az = raw IMU body axes (x up, y forward, z along the axle)\n";
         size_t paramCount;
         const ParamDef *defs = Settings::params(paramCount);

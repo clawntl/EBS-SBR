@@ -4,7 +4,11 @@
 float K[6] = {0, -10, 0, -0.05, -0.6, 0};
 
 float angleSetPoint = 2 * DEG_TO_RAD;
+float setPointTrim = 0;
+bool learnTrim = true;
 float deactivationAngle = 42;
+float engageAngle = 10;
+float runawaySpeed = 60;
 
 float alpha = 0.998;
 uint16_t IMUsampleRate = 500;
