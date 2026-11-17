@@ -7,6 +7,14 @@
 extern float theta[3];
 extern float theta_dot[3];
 
+// Raw sensor axes in the BMI160's own (body) frame, for logging and the web
+// page's chart. Gyro: rad/s with the boot-time offsets removed. Accel: g.
+// On this robot X is vertical (up/down through the chassis), Y points
+// forward/back and Z lies along the wheel axle (see Task_BMI160 for how they
+// map onto yaw / pitch / tilt).
+extern float imuGyro[3];  // {x, y, z} rad/s
+extern float imuAccel[3]; // {x, y, z} g
+
 // Sets up the SPI bus and the BMI160, then zeroes the gyro offsets.
 // Blocking: the zero routine takes ~3 seconds.
 void initIMU();

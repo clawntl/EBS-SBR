@@ -7,12 +7,15 @@
 #include "bmi160.h"
 #include "bmi160_defs.h"
 
+#include "DeviceLog.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
 #include "StatusLED.h"
 
 float theta_dot[3];  // {yaw, pitch, roll}
 float theta[3];      // {yaw, pitch, roll}
+float imuGyro[3];
+float imuAccel[3];
 
 namespace {
 
@@ -95,14 +98,12 @@ void BMI160_DELAY_ms(uint32_t period_ms) {
   delay(period_ms);
 }
 
-float convertRawAccel(int16_t aRaw) {
-  // since we are using 2 g range
-  // -2 g maps to a raw value of -32768
-  // +2 g maps to a raw value of 32767
-  // Units: m/s
+// Accelerometer scale [g per LSB], from the range actually set in the chip
+// (read back in initIMU). Starts at the +-2 g value the code asks for.
+float accelScale = 2.0f / 32768.0f;
 
-  float a = (aRaw * 2.0) / 32768.0;
-  return a;
+float convertRawAccel(int16_t aRaw) {
+  return aRaw * accelScale; // g
 }
 
 float convertRawGyro(int16_t gRaw) {
@@ -159,6 +160,14 @@ void zeroIMU() {
   Z_Offset = sum_Z / (float)iterations;
   pitchOffset = sumPitch / (float)iterations;  // Store the reference angle
 
+  {
+    struct bmi160_sensor_data a, g;
+    if (bmi160_get_sensor_data(BMI160_ACCEL_SEL | BMI160_GYRO_SEL, &a, &g, &bmi) == BMI160_OK) {
+      const float x = convertRawAccel(a.x), y = convertRawAccel(a.y), z = convertRawAccel(a.z);
+      DeviceLog::printf("[imu] accel at rest: %.3f g (should be about 1.000)\n", sqrtf(x * x + y * y + z * z));
+    }
+  }
+
   Serial.print("SUM X: ");Serial.print(sum_X);
   Serial.print("\tOffset X: "); Serial.print(X_Offset * RAD_TO_DEG); Serial.println(" °/s");
 
@@ -167,6 +176,9 @@ void zeroIMU() {
 
   Serial.print("SUM Z: ");Serial.print(sum_Z);
   Serial.print("\tOffset Z: "); Serial.print(Z_Offset * RAD_TO_DEG); Serial.println(" °/s");
+
+  DeviceLog::printf("[imu] gyro offsets X %.2f, Y %.2f, Z %.2f deg/s\n",
+                    X_Offset * RAD_TO_DEG, Y_Offset * RAD_TO_DEG, Z_Offset * RAD_TO_DEG);
 
   Serial.print("SUM Pitch: ");Serial.print(sumPitch);
   Serial.print("\tOffset Z: "); Serial.print(pitchOffset * RAD_TO_DEG); Serial.println(" °/s");
@@ -209,7 +221,39 @@ void initIMU() {
   // Set the configuration
   rslt = bmi160_set_sens_conf(&bmi);
 
-  Serial.println("Starting to zero.....");
+  // The Bosch API only writes ACC_RANGE when the requested range differs
+  // from its idea of the chip's default (+-2 g), so asking for +-2 g never
+  // actually writes it. On this robot the register was left at +-16 g, so
+  // every reading came out 8x too small (1 g read as 0.125 g). Write it
+  // explicitly, read it back, and scale by what the chip really uses.
+  {
+    uint8_t range = BMI160_ACCEL_RANGE_2G;
+    bmi160_set_regs(BMI160_ACCEL_RANGE_ADDR, &range, 1, &bmi);
+    delay(2);
+    uint8_t conf[2] = {0, 0};
+    bmi160_get_regs(BMI160_ACCEL_CONFIG_ADDR, conf, 2, &bmi);
+    const uint8_t r = conf[1] & 0x0F;
+    const float fullScaleG = (r == BMI160_ACCEL_RANGE_2G) ? 2.0f
+                           : (r == BMI160_ACCEL_RANGE_4G) ? 4.0f
+                           : (r == BMI160_ACCEL_RANGE_8G) ? 8.0f
+                           : (r == BMI160_ACCEL_RANGE_16G) ? 16.0f : 0.0f;
+    if (fullScaleG > 0) accelScale = fullScaleG / 32768.0f;
+    DeviceLog::printf("[imu] accel config 0x%02X, range 0x%02X (+-%.0f g)%s\n", conf[0], conf[1], fullScaleG,
+                      fullScaleG == 2.0f ? "" : fullScaleG > 0 ? " - NOT the +-2 g asked for" : " - unknown, assuming +-2 g");
+  }
+  // Same blind spot for the gyro: +-2000 deg/s is the API's assumed default,
+  // so it's never written. Write it and check it (convertRawGyro assumes it).
+  {
+    uint8_t range = BMI160_GYRO_RANGE_2000_DPS;
+    bmi160_set_regs(BMI160_GYRO_RANGE_ADDR, &range, 1, &bmi);
+    delay(2);
+    uint8_t readBack = 0xFF;
+    bmi160_get_regs(BMI160_GYRO_RANGE_ADDR, &readBack, 1, &bmi);
+    DeviceLog::printf("[imu] gyro range 0x%02X%s\n", readBack,
+                      (readBack & 0x07) == BMI160_GYRO_RANGE_2000_DPS ? " (+-2000 deg/s)" : " - NOT +-2000 deg/s, rates will be scaled wrong!");
+  }
+
+  DeviceLog::printf("[imu] BMI160 init %s - zeroing the gyro, keep the robot still\n", rslt == BMI160_OK ? "OK" : "FAILED");
   //delay(2000);
 
   flashStatusLED(RGBColour{246, 20, 247}, 3, 150, 850); // 3 Purple Flashes
@@ -277,6 +321,13 @@ void Task_BMI160(void *pvParams) {
     float aX = convertRawAccel(accel.x);
     float aY = convertRawAccel(accel.y);
     float aZ = convertRawAccel(accel.z);
+
+    imuGyro[0] = convertRawGyro(gyro.x) - X_Offset;
+    imuGyro[1] = convertRawGyro(gyro.y) - Y_Offset;
+    imuGyro[2] = convertRawGyro(gyro.z) - Z_Offset;
+    imuAccel[0] = aX;
+    imuAccel[1] = aY;
+    imuAccel[2] = aZ;
 
     //filter.updateIMU(theta_dot[2], theta_dot[1], theta_dot[0], aZ, -aY, -aX);
 

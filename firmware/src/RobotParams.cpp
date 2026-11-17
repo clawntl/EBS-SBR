@@ -4,12 +4,21 @@
 float K[6] = {0, -10, 0, -0.05, -0.6, 0};
 
 float angleSetPoint = 2 * DEG_TO_RAD;
+float setPointTrim = 0;
+bool learnTrim = true;
 float deactivationAngle = 42;
+float engageAngle = 10;
+float runawaySpeed = 60;
 
 float alpha = 0.998;
 uint16_t IMUsampleRate = 500;
 
 bool paused = false;
 
-float turnCurrentGain = 0.15;
-float moveCurrentGain = 0.3;
+float maxWheelSpeed = 10;
+float maxWheelAccel = 20;
+float maxTurnRate = 90 * DEG_TO_RAD;
+float turnFeedForward = 0.15;
+bool yawInvert = false;
+float maxPositionError = 10;
+float maxHeadingError = 30 * DEG_TO_RAD;

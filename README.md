@@ -59,8 +59,8 @@ See the BLDC-Driver [hardware guide](https://github.com/clawntl/BLDC-Driver/blob
 | `0x020` | Controller → both     | Broadcast to both motor drivers |
 | `0x021` | Controller → left     | Left motor driver               |
 | `0x022` | Controller → right    | Right motor driver              |
-| `0x100` | Right driver → ctrl   | Right driver velocity, status, replies and errors |
-| `0x101` | Left driver → ctrl    | Left driver velocity, status, replies and errors  |
+| `0x100` | Right driver → ctrl   | Right driver velocity, status (incl. supply voltage), replies and errors |
+| `0x101` | Left driver → ctrl    | Left driver velocity, status (incl. supply voltage), replies and errors  |
 
 Command bytes: `0x02` shaft velocity, `0x03` driver status heartbeat, `0x10` start FOC (and the driver's reply), `0xFF` error. See the BLDC-Driver [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for the frame layouts.
 
@@ -68,13 +68,20 @@ Command bytes: `0x02` shaft velocity, `0x03` driver status heartbeat, `0x10` sta
 
 Both firmware projects use [PlatformIO](https://platformio.org/).
 
-**Controller board:** flash the firmware, then upload the web page to LittleFS. Repeat `uploadfs` whenever `firmware/data/` changes.
+**Controller board:** the web page (`firmware/data/index.html`) is compiled into the firmware by `firmware/scripts/embed_web.py`, so there is no separate filesystem upload.
 
 ```bash
 cd firmware
 pio run -t upload
-pio run -t uploadfs
 ```
+
+Once the robot is running this firmware and has joined the same network as your computer (Access point only turned off on the WiFi tab), it can also be flashed over WiFi:
+
+```bash
+pio run -e ota -t upload --upload-port balancebot-xxxxxx.local
+```
+
+The firmware uses the `min_spiffs.csv` partition table (two ~1.9 MB app slots for OTA). Moving to it from the old `default.csv` layout needs one USB flash; saved settings (NVS) survive the change.
 
 **Driver boards:** build and flash from the BLDC-Driver repo. All boards use the same build. Each board is then set to left or right over its USB serial console:
 
@@ -111,14 +118,19 @@ python tools/wifi_qr.py 5302cc            # or several: 5302cc a1b2c3 ...
 
 The files are written to `tools/qr-codes/` (git-ignored, as they contain the robot's password); use `--out DIR` to put them elsewhere.
 
-Connect, then open the IP address printed on the serial console at boot (normally `http://192.168.4.1`). The page updates live over a WebSocket and provides:
+Joining the network opens the web page automatically on most phones (captive portal); otherwise browse to `http://192.168.71.1/`. (The address isn't the ESP32 default 192.168.4.1, because some home routers use that range.) The page updates live over a WebSocket and has five tabs:
 
-- sliders for the LQR gains, angle set point (with a fine adjust), deactivation angle, filter coefficient and drive gains
-- the IMU / control rate (applied after a reboot)
-- pause / resume
-- a touch joystick for driving, or a gamepad connected to the phone or computer viewing the page. The browser's Gamepad API needs Chrome or Edge here: Firefox only allows it on HTTPS pages.
+- **Tune:** live state, tilt, set point, wheel speed, loop rate, both motor drivers' state and the battery level; a battery chart (average of the two drivers' readings, optionally each driver's) and a telemetry chart (tilt, LQR and motor currents, tilt rate, wheel speed) over 10 s to 1 h; every tunable setting, with an explanation for each, and **Save to flash / Revert to saved / Factory defaults**; and **Record**, which captures every control step (5-60 s, now or when it next starts balancing) for download as CSV, with the settings in use in its header.
+- **Control:** the touch joystick and gamepad selection, Pause, and a live status readout. The browser's Gamepad API needs Chrome or Edge here: Firefox only allows it on HTTPS pages.
+- **WiFi:** the **Access point only** switch (on by default, for open days), saved networks (up to 5), a scan of networks in range, and the connection status. With Access point only off, the robot joins the strongest saved network at power-on and falls back to its own access point when none is available. On a home network it's at `http://balancebot-xxxxxx.local/`.
+- **Log:** recent messages from the robot (start-up, motor drivers, IMU, WiFi, battery), with their uptime.
+- **Info:** the robot's name, WiFi password and addresses, the motor drivers' details, and how to use it.
 
-Drive input is zeroed if the page stops sending for 300 ms.
+Drive input is zeroed if the page stops sending for 300 ms, and straight away if the page disconnects.
+
+### Battery
+
+The controller has no voltage sensing of its own: both motor drivers measure their supply (the same 3S Li-ion pack) and report it in their CAN status heartbeat. This needs BLDC-Driver firmware that fills in the voltage field (older firmware sends 0, shown as "no reading"). Below the **Battery cutoff** setting (9.6 V by default, 3.2 V per cell; 0 turns it off) the robot stops balancing until the voltage recovers by 0.3 V.
 
 ## Tuning over serial
 
@@ -128,15 +140,15 @@ The controller board accepts commands at 115200 baud, one per line:
 |--------------|--------------------------------------------------|
 | `SP <deg>`   | Balance angle set point (degrees from upright)   |
 | `DA <deg>`   | Tilt angle at which the motors are deactivated   |
-| `K0 <value>` | Wheel displacement gain                          |
-| `K1 <value>` | Tilt angle gain                                  |
-| `K3 <value>` | Wheel velocity gain                              |
-| `K4 <value>` | Tilt velocity gain                               |
+| `K0`-`K5 <value>` | LQR gains (only K1, K3 and K4 are used at the moment) |
 | `CA <value>` | Complementary filter coefficient                 |
+| `SET <key> <value>` | Any setting by its key                    |
+| `LIST`       | All settings with their current values           |
+| `SAVE`       | Save the settings to flash                       |
 | `MS`         | Print each motor driver's link state, flags, start attempts and last error |
 | `MR`         | Reset start attempts so a driver that gave up is tried again |
 
-Default gains live in [`firmware/src/RobotParams.cpp`](firmware/src/RobotParams.cpp).
+Changes made over serial show up on the web page too. Without a value, a command prints the current one. Default values, ranges and help texts for every setting live in [`firmware/src/Settings.cpp`](firmware/src/Settings.cpp).
 
 ## Repository layout
 

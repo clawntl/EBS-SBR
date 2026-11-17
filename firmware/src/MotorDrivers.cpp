@@ -4,6 +4,15 @@
 
 #include "CANConfig.h"
 #include "CanBus.h"
+#include "DeviceLog.h"
+#include "LQRControl.h"
+#include "Settings.h"
+
+#include <atomic>
+#include <initializer_list>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 
 namespace {
 
@@ -28,11 +37,22 @@ struct DriverTrack {
 
     volatile uint8_t  lastError = 0;
     volatile uint32_t lastErrorMs = 0;
+
+    volatile uint16_t supplyMv = 0;
+    volatile uint32_t supplyMs = 0;
+
+    MotorLink loggedLink = MotorLink::Offline; // for logging link changes
 };
 
 DriverTrack drivers[2];
 
-const uint32_t kCommandId[2] = { LEFT_MOTOR_CAN_ADDR, RIGHT_MOTOR_CAN_ADDR };
+// Node IDs in use for left / right (see driverNode()).
+volatile uint8_t activeNode[2] = { 1, 2 };
+
+uint32_t commandId(int side) { return COMMAND_ID_BASE + activeNode[side]; }
+
+// Last heartbeat from each node 0..15 (0 = old firmware "right" board).
+volatile uint32_t heardMs[NODE_ID_MAX + 1] = {};
 const char *const kSideName[2] = { "Left", "Right" };
 
 bool heartbeatFresh(const DriverTrack &d, uint32_t now) {
@@ -55,11 +75,16 @@ MotorLink linkOf(const DriverTrack &d, uint32_t now) {
 
 } // namespace
 
-void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags) {
+void handleDriverStatusFrame(MotorSide side, uint8_t state, uint8_t flags, uint16_t supplyMv) {
     DriverTrack &d = drivers[side];
+    const uint32_t now = millis();
     d.state = state;
     d.flags = flags;
-    d.lastHeartbeatMs = millis();
+    d.lastHeartbeatMs = now;
+    if (supplyMv) {
+        d.supplyMv = supplyMv;
+        d.supplyMs = now;
+    }
     d.everSeen = true;
     if (state == DRIVER_STATE_RUNNING) {
         // Covers a missed start reply.
@@ -74,14 +99,14 @@ void handleDriverStartReply(MotorSide side, bool ok) {
     d.startPending = false;
     d.lastStartFailed = !ok;
     if (ok) d.startAttempts = 0;
-    Serial.printf("%s motor driver: FOC start %s\n", kSideName[side], ok ? "OK" : "FAILED");
+    DeviceLog::printf("[motor] %s driver: FOC start %s\n", kSideName[side], ok ? "OK" : "FAILED");
 }
 
 void handleDriverError(MotorSide side, uint8_t code) {
     DriverTrack &d = drivers[side];
     d.lastError = code;
     d.lastErrorMs = millis();
-    Serial.printf("%s motor driver error %u: %s\n", kSideName[side], code, driverErrorName(code));
+    DeviceLog::printf("[motor] %s driver error %u: %s\n", kSideName[side], code, driverErrorName(code));
 }
 
 MotorDriverInfo getMotorDriverInfo(MotorSide side) {
@@ -93,7 +118,15 @@ MotorDriverInfo getMotorDriverInfo(MotorSide side) {
     info.lastError = d.lastError;
     info.lastErrorAgeMs = d.lastError ? (now - d.lastErrorMs) : 0;
     info.startAttempts = d.startAttempts;
+    info.supplyVolts = getDriverSupplyVoltage(side, 1000);
     return info;
+}
+
+float getDriverSupplyVoltage(MotorSide side, uint32_t maxAgeMs) {
+    const DriverTrack &d = drivers[side];
+    const uint32_t mv = d.supplyMv, at = d.supplyMs;
+    if (!mv || millis() - at > maxAgeMs) return 0.0f;
+    return mv / 1000.0f;
 }
 
 bool motorsReady() {
@@ -142,6 +175,488 @@ const char *driverErrorName(uint8_t code) {
     }
 }
 
+// ===========================================================================
+// Driver configuration over CAN
+// ===========================================================================
+
+uint8_t wheelTelemetryMs = 2;
+uint8_t leftNodeSetting = 1, rightNodeSetting = 2;
+
+uint8_t driverNode(MotorSide side) { return activeNode[side]; }
+
+void noteNodeHeard(uint8_t node, uint8_t) {
+    if (node <= NODE_ID_MAX) heardMs[node] = millis() | 1;
+}
+
+uint16_t nodesHeard() {
+    const uint32_t now = millis();
+    uint16_t bits = 0;
+    for (int n = 0; n <= NODE_ID_MAX; n++) {
+        const uint32_t t = heardMs[n];
+        if (t && now - t < 2000) bits |= 1u << n;
+    }
+    return bits;
+}
+
+namespace {
+
+constexpr uint32_t REPLY_TIMEOUT_MS = 500;
+constexpr uint32_t REBOOT_TIMEOUT_MS = 20000; // driver reboot + FOC start (+ alignment)
+
+portMUX_TYPE cfgLock = portMUX_INITIALIZER_UNLOCKED;
+DriverConfigView cfg[2] = {};
+std::atomic<uint32_t> cfgVersion{0};
+
+// Last configuration reply per driver, for the job steps to wait on.
+struct LastReply {
+    volatile uint32_t seq = 0;
+    volatile uint8_t cmd = 0;
+    volatile uint8_t arg = 0;     // param / op / which
+    volatile uint8_t status = 0;
+};
+LastReply lastReply[2];
+
+bool needsRefresh[2] = { false, false };
+uint8_t sentInterval[2] = { 0, 0 };
+
+enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode };
+enum class Step : uint8_t { Send, WaitReply, WaitInfo,
+                            RecalWaitClear, RecalWaitSave1, RecalWaitAligned, RecalWaitStore,
+                            RecalWaitSave2, RecalWaitRunning,
+                            NodeWaitSet, NodeWaitSave };
+
+struct JobState {
+    Job job = Job::None;
+    MotorSide side = MOTOR_LEFT;
+    DriverOp op = DriverOp::Refresh;
+    float value = 0;
+    Step step = Step::Send;
+    uint32_t stepStartMs = 0;
+    uint32_t seqAtSend[2] = { 0, 0 };
+    bool sawRestart = false;
+    char text[64] = "";
+};
+JobState job;
+
+void bump() { cfgVersion++; }
+
+void setResult(MotorSide side, const char *fmt, ...) {
+    char buf[sizeof(cfg[0].result)];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    portENTER_CRITICAL(&cfgLock);
+    strncpy(cfg[side].result, buf, sizeof(cfg[side].result) - 1);
+    cfg[side].result[sizeof(cfg[side].result) - 1] = 0;
+    portEXIT_CRITICAL(&cfgLock);
+    DeviceLog::printf("[driver] %s: %s\n", kSideName[side], buf);
+    bump();
+}
+
+void setJobText(const char *t) {
+    portENTER_CRITICAL(&cfgLock);
+    strncpy(job.text, t, sizeof(job.text) - 1);
+    job.text[sizeof(job.text) - 1] = 0;
+    portEXIT_CRITICAL(&cfgLock);
+    bump();
+}
+
+void endJob() {
+    job.job = Job::None;
+    setJobText("");
+}
+
+void send(MotorSide side, std::initializer_list<uint8_t> bytes) {
+    uint8_t b[8];
+    uint8_t n = 0;
+    for (uint8_t x : bytes) if (n < 8) b[n++] = x;
+    sendDriverCommand(commandId(side), b, n);
+}
+
+void sendSetParam(MotorSide side, uint8_t param, float v) {
+    uint8_t b[6] = { CMD_SET_PARAM, param };
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    b[2] = bits >> 24; b[3] = bits >> 16; b[4] = bits >> 8; b[5] = bits;
+    sendDriverCommand(commandId(side), b, sizeof(b));
+}
+
+void sendQueries(MotorSide side) {
+    send(side, { CMD_GET_INFO });
+    send(side, { CMD_GET_CONFIG, 0 });
+    send(side, { CMD_GET_CONFIG, 1 });
+}
+
+const char *statusText(uint8_t st) {
+    switch (st) {
+        case CONFIG_OK:              return "OK";
+        case CONFIG_ERR_UNKNOWN:     return "not supported by this firmware";
+        case CONFIG_ERR_BAD_VALUE:   return "value out of range";
+        case CONFIG_ERR_NOT_ALIGNED: return "no alignment to store (motor not running)";
+        case CONFIG_ERR_FLASH:       return "firmware too big - settings page in use";
+    }
+    return "unknown status";
+}
+
+// True once a reply to `cmd` arrived after seqAtSend; status in *st.
+bool gotReply(MotorSide side, uint8_t cmd, uint8_t *st) {
+    if (lastReply[side].seq == job.seqAtSend[side]) return false;
+    if (lastReply[side].cmd != cmd && lastReply[side].cmd != CMD_NACK) return false;
+    *st = lastReply[side].cmd == CMD_NACK ? CONFIG_ERR_UNKNOWN : lastReply[side].status;
+    return true;
+}
+
+void markSent(MotorSide side, uint32_t now) {
+    job.seqAtSend[side] = lastReply[side].seq;
+    job.stepStartMs = now;
+}
+
+void forgetSettings(MotorSide side) {
+    portENTER_CRITICAL(&cfgLock);
+    cfg[side].activeKnown = false;
+    cfg[side].pendingKnown = false;
+    portEXIT_CRITICAL(&cfgLock);
+    bump();
+}
+
+uint8_t simpleCmd(DriverOp op) {
+    switch (op) {
+        case DriverOp::SetInvert: return CMD_SET_PARAM;
+        case DriverOp::CalStore:
+        case DriverOp::CalClear:  return CMD_CALIBRATION;
+        case DriverOp::Revert:    return CMD_REVERT;
+        case DriverOp::Save:      return CMD_SAVE;
+        case DriverOp::Reboot:    return CMD_REBOOT;
+        default:                  return 0;
+    }
+}
+
+void runJob(uint32_t now) {
+    const MotorSide sd = job.side;
+    const uint32_t inStep = now - job.stepStartMs;
+    uint8_t st = 0;
+
+    switch (job.job) {
+    case Job::None:
+        return;
+
+    case Job::Refresh:
+        if (job.step == Step::Send) {
+            markSent(sd, now);
+            sendQueries(sd);
+            job.step = Step::WaitInfo;
+        } else if (cfg[sd].infoKnown && lastReply[sd].seq != job.seqAtSend[sd] && inStep > 100) {
+            endJob();
+        } else if (inStep > REPLY_TIMEOUT_MS) {
+            if (!cfg[sd].infoKnown) {
+                portENTER_CRITICAL(&cfgLock);
+                cfg[sd].noConfigSupport = true;
+                portEXIT_CRITICAL(&cfgLock);
+                bump();
+            }
+            endJob();
+        }
+        return;
+
+    case Job::Simple:
+    case Job::Save: {
+        const uint8_t cmd = simpleCmd(job.op);
+        if (job.step == Step::Send) {
+            markSent(sd, now);
+            switch (job.op) {
+                case DriverOp::SetInvert: sendSetParam(sd, PARAM_INVERT, job.value); break;
+                case DriverOp::CalStore:  send(sd, { CMD_CALIBRATION, CAL_STORE }); break;
+                case DriverOp::CalClear:  send(sd, { CMD_CALIBRATION, CAL_CLEAR }); break;
+                default:                  send(sd, { cmd }); break;
+            }
+            job.step = Step::WaitReply;
+        } else if (gotReply(sd, cmd, &st)) {
+            const bool restarts = (job.op == DriverOp::Save || job.op == DriverOp::Reboot) && st == CONFIG_OK;
+            setResult(sd, "%s: %s%s", job.text, statusText(st), restarts ? " - rebooting" : "");
+            if (restarts) forgetSettings(sd);
+            else { send(sd, { CMD_GET_CONFIG, 0 }); send(sd, { CMD_GET_CONFIG, 1 }); }
+            endJob();
+        } else if (inStep > REPLY_TIMEOUT_MS) {
+            setResult(sd, "%s: no reply", job.text);
+            endJob();
+        }
+        return;
+    }
+
+    case Job::Recalibrate: {
+        const MotorLink link = linkOf(drivers[sd], now);
+        switch (job.step) {
+        case Step::Send:
+            markSent(sd, now);
+            send(sd, { CMD_CALIBRATION, CAL_CLEAR });
+            job.step = Step::RecalWaitClear;
+            setJobText("Alignment: clearing the stored one");
+            break;
+        case Step::RecalWaitClear:
+            if (gotReply(sd, CMD_CALIBRATION, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Alignment failed: clear: %s", statusText(st)); endJob(); break; }
+                markSent(sd, now);
+                send(sd, { CMD_SAVE });
+                job.step = Step::RecalWaitSave1;
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Alignment failed: no reply"); endJob(); }
+            break;
+        case Step::RecalWaitSave1:
+            if (gotReply(sd, CMD_SAVE, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Alignment failed: save: %s", statusText(st)); endJob(); break; }
+                forgetSettings(sd);
+                job.sawRestart = false;
+                job.stepStartMs = now;
+                job.step = Step::RecalWaitAligned;
+                setJobText("Alignment: driver rebooting, then aligning (the wheel will move)");
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Alignment failed: no reply to save"); endJob(); }
+            break;
+        case Step::RecalWaitAligned:
+            if (link != MotorLink::Running) job.sawRestart = true;
+            if (job.sawRestart && link == MotorLink::Running) {
+                if (drivers[sd].flags & DRIVER_FLAG_CALIBRATION_USED) {
+                    setResult(sd, "Alignment failed: the driver still used a stored alignment");
+                    endJob();
+                    break;
+                }
+                markSent(sd, now);
+                send(sd, { CMD_CALIBRATION, CAL_STORE });
+                job.step = Step::RecalWaitStore;
+                setJobText("Alignment: storing the new one");
+            } else if (inStep > REBOOT_TIMEOUT_MS) {
+                setResult(sd, "Alignment failed: driver didn't start again (state %s)", motorLinkName(link));
+                endJob();
+            }
+            break;
+        case Step::RecalWaitStore:
+            if (gotReply(sd, CMD_CALIBRATION, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Alignment failed: store: %s", statusText(st)); endJob(); break; }
+                markSent(sd, now);
+                send(sd, { CMD_SAVE });
+                job.step = Step::RecalWaitSave2;
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Alignment failed: no reply to store"); endJob(); }
+            break;
+        case Step::RecalWaitSave2:
+            if (gotReply(sd, CMD_SAVE, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Alignment failed: save: %s", statusText(st)); endJob(); break; }
+                forgetSettings(sd);
+                job.sawRestart = false;
+                job.stepStartMs = now;
+                job.step = Step::RecalWaitRunning;
+                setJobText("Alignment: driver rebooting with the new alignment");
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Alignment failed: no reply to save"); endJob(); }
+            break;
+        case Step::RecalWaitRunning:
+            if (link != MotorLink::Running) job.sawRestart = true;
+            if (job.sawRestart && link == MotorLink::Running) {
+                const bool used = drivers[sd].flags & DRIVER_FLAG_CALIBRATION_USED;
+                setResult(sd, used ? "Alignment done and saved" : "Alignment saved, but the driver didn't use it on restart");
+                endJob();
+            } else if (inStep > REBOOT_TIMEOUT_MS) {
+                setResult(sd, "Alignment saved, but the driver didn't start again (state %s)", motorLinkName(link));
+                endJob();
+            }
+            break;
+        default:
+            endJob();
+        }
+        return;
+    }
+
+    case Job::ChangeNode: {
+        const uint8_t newId = (uint8_t)lroundf(job.value);
+        if (job.step == Step::Send) {
+            markSent(sd, now);
+            sendSetParam(sd, PARAM_NODE_ID, newId);
+            job.step = Step::NodeWaitSet;
+        } else if (job.step == Step::NodeWaitSet) {
+            if (gotReply(sd, CMD_SET_PARAM, &st)) {
+                if (st != CONFIG_OK) { setResult(sd, "Node ID change failed: %s", statusText(st)); endJob(); break; }
+                markSent(sd, now);
+                send(sd, { CMD_SAVE });
+                job.step = Step::NodeWaitSave;
+            } else if (inStep > REPLY_TIMEOUT_MS) { setResult(sd, "Node ID change failed: no reply"); endJob(); }
+        } else if (job.step == Step::NodeWaitSave) {
+            if (gotReply(sd, CMD_SAVE, &st)) {
+                if (st != CONFIG_OK) {
+                    send(sd, { CMD_REVERT });
+                    setResult(sd, "Node ID change failed: save: %s", statusText(st));
+                    endJob();
+                    break;
+                }
+                // The board reboots as node newId: follow it.
+                Settings::set(sd == MOTOR_LEFT ? "leftNode" : "rightNode", newId);
+                forgetSettings(sd);
+                setResult(sd, "Now node %u - rebooting", newId);
+                endJob();
+            } else if (inStep > REPLY_TIMEOUT_MS) {
+                send(sd, { CMD_REVERT });
+                setResult(sd, "Node ID change failed: no reply to save");
+                endJob();
+            }
+        }
+        break;
+    }
+    }
+}
+
+// Takes the wanted left/right node IDs into use, only while not balancing
+// (switching mid-balance would send one wheel's current to another board).
+void serviceNodeMapping() {
+    const uint8_t l = leftNodeSetting, r = rightNodeSetting;
+    if (l == activeNode[0] && r == activeNode[1]) return;
+    if (l < NODE_ID_MIN || l > NODE_ID_MAX || r < NODE_ID_MIN || r > NODE_ID_MAX || l == r) return;
+    if (balanceState == BalanceState::Balancing) return;
+    for (int s = 0; s < 2; s++) {
+        const uint8_t n = s ? r : l;
+        if (activeNode[s] == n) continue;
+        DeviceLog::printf("[driver] %s driver: node %u -> %u\n", kSideName[s], activeNode[s], n);
+        activeNode[s] = n;
+        drivers[s] = DriverTrack{};
+        portENTER_CRITICAL(&cfgLock);
+        cfg[s] = DriverConfigView{};
+        portEXIT_CRITICAL(&cfgLock);
+        sentInterval[s] = 0;
+        needsRefresh[s] = true;
+    }
+    // Remember it (only these two keys; other unsaved settings stay unsaved).
+    if (Settings::savedValue("leftNode") != l) Settings::saveKey("leftNode");
+    if (Settings::savedValue("rightNode") != r) Settings::saveKey("rightNode");
+    bump();
+}
+
+// Velocity telemetry rate: (re)sent whenever a driver is running a firmware
+// that supports it and hasn't been sent the current value since it started.
+void serviceTelemetryRate(uint32_t now) {
+    for (int s = 0; s < 2; s++) {
+        if (linkOf(drivers[s], now) != MotorLink::Running) { sentInterval[s] = 0; continue; }
+        if (!cfg[s].infoKnown || cfg[s].protocol < 2 || wheelTelemetryMs == 0) continue;
+        if (sentInterval[s] == wheelTelemetryMs) continue;
+        sentInterval[s] = wheelTelemetryMs;
+        sendSetParam((MotorSide)s, PARAM_VELOCITY_INTERVAL_MS, wheelTelemetryMs);
+    }
+}
+
+} // namespace
+
+void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
+    if (len < 2) return;
+    DriverConfigView &c = cfg[side];
+    portENTER_CRITICAL(&cfgLock);
+    switch (d[0]) {
+        case CMD_GET_INFO:
+            if (len >= 6) {
+                c.infoKnown = true;
+                c.noConfigSupport = false;
+                c.protocol = d[1];
+                c.fwMajor = d[2]; c.fwMinor = d[3]; c.fwPatch = d[4];
+                c.imageKB = d[5];
+            }
+            break;
+        case CMD_GET_CONFIG:
+            if (len >= 8) {
+                float angle;
+                const uint32_t bits = ((uint32_t)d[4] << 24) | ((uint32_t)d[5] << 16) | ((uint32_t)d[6] << 8) | d[7];
+                memcpy(&angle, &bits, 4);
+                if (d[1] == 0) { c.activeKnown = true; c.node = d[2]; c.flags = d[3]; c.zeroAngle = angle; }
+                else           { c.pendingKnown = true; c.pendNode = d[2]; c.pendFlags = d[3]; }
+            }
+            break;
+        default:
+            break;
+    }
+    portEXIT_CRITICAL(&cfgLock);
+    lastReply[side].cmd = d[0];
+    lastReply[side].arg = d[1];
+    lastReply[side].status = (d[0] == CMD_SET_PARAM && len >= 3) ? d[2]
+                           : (d[0] == CMD_CALIBRATION && len >= 3) ? d[2]
+                           : (d[0] == CMD_NACK) ? CONFIG_ERR_UNKNOWN
+                           : d[1];
+    lastReply[side].seq = lastReply[side].seq + 1;
+    bump();
+}
+
+DriverConfigView getDriverConfig(MotorSide side) {
+    portENTER_CRITICAL(&cfgLock);
+    const DriverConfigView v = cfg[side];
+    portEXIT_CRITICAL(&cfgLock);
+    return v;
+}
+
+uint32_t driverConfigVersion() { return cfgVersion; }
+
+const char *driverJobText() { return job.text; }
+
+static const char *opName(DriverOp op) {
+    switch (op) {
+        case DriverOp::Refresh:     return "Refresh";
+        case DriverOp::SetInvert:   return "Invert";
+        case DriverOp::CalStore:    return "Store alignment";
+        case DriverOp::CalClear:    return "Clear alignment";
+        case DriverOp::Save:        return "Save";
+        case DriverOp::Revert:      return "Revert";
+        case DriverOp::Reboot:      return "Reboot";
+        case DriverOp::Recalibrate: return "Re-run alignment";
+        case DriverOp::SetNodeId:   return "Change node ID";
+    }
+    return "?";
+}
+
+static const char *startJob(Job j, MotorSide side, DriverOp op, float value) {
+    if (op != DriverOp::Refresh && balanceState == BalanceState::Balancing)
+        return "Not while it's balancing - pause it or lay it down first";
+    if (op != DriverOp::Refresh && !cfg[side].infoKnown)
+        return "This driver hasn't answered yet (firmware 1.1 or later is needed for settings over CAN)";
+    portENTER_CRITICAL(&cfgLock);
+    const bool busy = job.job != Job::None;
+    if (!busy) {
+        job.side = side;
+        job.op = op;
+        job.value = value;
+        job.step = Step::Send;
+        job.stepStartMs = millis();
+        job.sawRestart = false;
+        snprintf(job.text, sizeof(job.text), "%s (%s)", opName(op), kSideName[side]);
+        job.job = j; // last: the supervisor starts on this
+    }
+    portEXIT_CRITICAL(&cfgLock);
+    if (busy) return "Another driver operation is still running";
+    bump();
+    return nullptr;
+}
+
+const char *requestDriverOp(MotorSide side, DriverOp op, float value) {
+    switch (op) {
+        case DriverOp::Refresh:     return startJob(Job::Refresh, side, op, value);
+        case DriverOp::Save:
+        case DriverOp::Reboot:      return startJob(Job::Save, side, op, value);
+        case DriverOp::Recalibrate: return startJob(Job::Recalibrate, side, op, value);
+        case DriverOp::SetNodeId: {
+            const int id = (int)lroundf(value);
+            if (id < NODE_ID_MIN || id > NODE_ID_MAX) return "Node IDs are 1-15";
+            if (id == activeNode[side]) return "It's already that node";
+            if (id == activeNode[side ? 0 : 1]) return "That's the other wheel's node";
+            if (nodesHeard() & (1u << id)) return "Another board on the bus already uses that node ID";
+            if (cfg[side].infoKnown && cfg[side].protocol < 3) return "This driver's firmware has no node IDs (needs 1.2)";
+            return startJob(Job::ChangeNode, side, op, value);
+        }
+        default:                    return startJob(Job::Simple, side, op, value);
+    }
+}
+
+const char *requestDriverNodes(uint8_t l, uint8_t r) {
+    if (balanceState == BalanceState::Balancing) return "Not while it's balancing - pause it or lay it down first";
+    if (l < NODE_ID_MIN || l > NODE_ID_MAX || r < NODE_ID_MIN || r > NODE_ID_MAX) return "Node IDs are 1-15";
+    if (l == r) return "Left and right must be different nodes";
+    Settings::set("leftNode", l);
+    Settings::set("rightNode", r);
+    return nullptr;
+}
+
+const char *requestSwapDriverSides() {
+    return requestDriverNodes(activeNode[1], activeNode[0]);
+}
+
 void Task_motorSupervisor(void *pvParams) {
     uint32_t lastStartAttemptMs[2] = { 0, 0 };
     bool startedOnce[2] = { false, false };
@@ -155,7 +670,20 @@ void Task_motorSupervisor(void *pvParams) {
             if (d.startPending && (now - d.startSentMs) > START_REPLY_TIMEOUT_MS) {
                 d.startPending = false;
                 d.lastStartFailed = true;
-                Serial.printf("%s motor driver: no reply to START_FOC\n", kSideName[s]);
+                DeviceLog::printf("[motor] %s driver: no reply to START_FOC\n", kSideName[s]);
+            }
+        }
+
+        // Log each driver's state changes (shows up in the web page's Log tab).
+        for (int s = 0; s < 2; s++) {
+            const MotorLink link = linkOf(drivers[s], now);
+            if (link != drivers[s].loggedLink) {
+                DeviceLog::printf("[motor] %s driver: %s -> %s\n", kSideName[s],
+                                  motorLinkName(drivers[s].loggedLink), motorLinkName(link));
+                // (Re)appeared on the bus: re-read its firmware and settings.
+                if (drivers[s].loggedLink == MotorLink::Offline) needsRefresh[s] = true;
+                drivers[s].loggedLink = link;
+                bump();
             }
         }
 
@@ -174,11 +702,25 @@ void Task_motorSupervisor(void *pvParams) {
                 d.startSentMs = now;
                 lastStartAttemptMs[s] = now;
                 startedOnce[s] = true;
-                Serial.printf("%s motor driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
-                sendStartFOC(kCommandId[s]);
+                DeviceLog::printf("[motor] %s driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
+                sendStartFOC(commandId(s));
                 break; // one at a time
             }
         }
+
+        // Driver configuration: one operation at a time; refreshes when idle.
+        if (job.job == Job::None) {
+            for (int s = 0; s < 2; s++) {
+                if (needsRefresh[s] && linkOf(drivers[s], now) != MotorLink::Offline) {
+                    needsRefresh[s] = false;
+                    startJob(Job::Refresh, (MotorSide)s, DriverOp::Refresh, 0);
+                    break;
+                }
+            }
+        }
+        runJob(now);
+        if (job.job == Job::None) serviceNodeMapping();
+        serviceTelemetryRate(now);
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }

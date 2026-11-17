@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LQR Tuner</title>
+<title>Self-balancing Robot</title>
+<!-- Everything is inline: in access point mode there is no internet, so no CDNs. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='11' y='3' width='10' height='18' rx='2' fill='%234fa3ff'/%3E%3Ccircle cx='10' cy='24' r='6' fill='%234fa3ff'/%3E%3Ccircle cx='22' cy='24' r='6' fill='%234fa3ff'/%3E%3C/svg%3E">
 <style>
   :root {
     color-scheme: dark;
@@ -14,352 +16,1357 @@
     --muted: #8b929c;
     --accent: #4fa3ff;
     --ok: #3ecf6e;
+    --warn: #f0b429;
     --bad: #ff5c5c;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0;
+    margin: 0 auto;
+    max-width: 1500px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--bg);
     color: var(--text);
-    padding: 16px;
+    padding: 0 20px 20px;
   }
-  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  h1 .name { font-size: 0.85rem; font-weight: 500; color: var(--muted); margin-left: 6px; }
+
+  /* Header + tabs (sticky) */
+  header.top {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    padding: 14px 0 0; margin-bottom: 16px; border-bottom: 1px solid var(--border);
+  }
+  .titlebar { display: flex; align-items: center; justify-content: space-between; gap: 8px 20px; flex-wrap: wrap; }
+  .titlebar .status { margin: 0; }
+  .tabs { display: flex; gap: 4px; margin-top: 10px; overflow-x: auto; }
+  .tab {
+    background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    color: var(--muted); padding: 8px 14px; font-size: 0.92rem;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .count:not(:empty) {
+    display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px;
+    background: var(--accent); color: #041017; font-size: 0.7rem; line-height: 18px;
+  }
+  .tabpage[hidden] { display: none; }
+
+  /* Layout rows */
+  /* Tune tab: Live on the left with Settings + Record under it, charts on the
+     right spanning both rows. Narrow screens: one column, charts before
+     Settings + Record. */
+  .live-row {
+    display: grid; grid-template-columns: minmax(330px, 1fr) 2fr; gap: 0 16px;
+    grid-template-areas: "live charts" "side charts"; grid-template-rows: auto 1fr; align-items: start;
+  }
+  .live-row > .live-main { grid-area: live; }
+  .live-row > .live-charts { grid-area: charts; }
+  .live-row > .live-side { grid-area: side; }
+  .pair-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 0 16px; }
+  @media (max-width: 900px) {
+    .live-row, .pair-row { grid-template-columns: 1fr; }
+    .live-row { grid-template-areas: "live" "charts" "side"; grid-template-rows: auto; }
+    body { padding: 0 12px 12px; }
+    .chart-wrap { height: 200px; }
+    .chart-wrap.short { height: 100px; }
+  }
   .status {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 16px;
-    font-size: 0.9rem;
-    color: var(--muted);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 16px; font-size: 0.9rem; color: var(--muted);
   }
-  .dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--bad);
-  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
   .dot.connected { background: var(--ok); }
   .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 16px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px; margin-bottom: 16px;
   }
   .panel h2 {
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 0 0 10px;
+    font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 0 0 10px;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
   }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-bottom: 12px;
-  }
-  .row:last-child { margin-bottom: 0; }
-  .row label {
-    flex: 0 0 130px;
-    font-size: 0.9rem;
-  }
-  .row input[type="range"] {
-    flex: 1;
-    accent-color: var(--accent);
-  }
-  .row output {
-    flex: 0 0 70px;
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    font-size: 0.9rem;
-  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(440px, 100%), 1fr)); gap: 0 16px; }
+
+  /* Live readouts */
+  .tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .tile { background: #0e1013; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+  .tile .k { font-size: 0.75rem; color: var(--muted); }
+  .tile .v { font-size: 1.15rem; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .tile.wide { grid-column: 1 / -1; }
+  .gauge { height: 5px; background: #2c3038; border-radius: 3px; margin: 6px 0 4px; overflow: hidden; }
+  .gauge div { height: 100%; width: 0; background: var(--ok); transition: width 0.5s; }
+  .v.ok { color: var(--ok); } .v.warn { color: var(--warn); } .v.bad { color: var(--bad); }
+  .drivers { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 0.9rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .drivers .side { color: var(--muted); }
+  .ok-text { color: var(--ok); } .warn-text { color: var(--warn); } .bad-text { color: var(--bad); }
+
+  /* Settings rows */
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row label { flex: 1 1 120px; min-width: 0; font-size: 0.88rem; }
+  .row input[type="range"] { flex: 1 1 80px; min-width: 0; accent-color: var(--accent); }
   .row input[type="number"] {
-    width: 90px;
-    background: #0e1013;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 6px 8px;
+    flex: 0 0 76px; width: 76px; background: #0e1013; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 5px 6px; font-variant-numeric: tabular-nums;
   }
+  .badge { font-size: 0.65rem; color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+  .badge.dim { color: var(--muted); border-color: var(--muted); }
+
+  /* Buttons */
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
   button {
-    background: var(--accent);
-    color: #041017;
-    border: none;
-    border-radius: 8px;
-    padding: 10px 18px;
-    font-weight: 600;
-    font-size: 0.95rem;
-    cursor: pointer;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 16px; font-weight: 600; font-size: 0.9rem; cursor: pointer;
   }
-  button.paused { background: var(--bad); color: #200404; }
-  button.secondary {
-    background: var(--panel);
-    color: var(--text);
-    border: 1px solid var(--border);
-    padding: 8px 14px;
-    font-size: 0.85rem;
-    white-space: nowrap;
-  }
+  button.primary { background: var(--accent); color: #041017; border-color: var(--accent); }
+  button.danger { background: var(--bad); color: #200404; border-color: var(--bad); }
+  button.small { padding: 4px 10px; font-size: 0.75rem; font-weight: 500; }
+  button.big { padding: 14px 22px; font-size: 1.05rem; width: 100%; }
+  button:disabled { opacity: 0.45; cursor: default; }
 
+  /* Chart */
+  .chart-wrap { position: relative; height: 270px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.8rem; margin-top: 8px; color: var(--muted); }
+  .legend label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .swatch { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch.shade { height: 10px; background: rgba(79,163,255,0.25); }
+  .swatch.shade-rec { height: 10px; background: rgba(255,107,107,0.30); }
+  .legend > span { display: flex; align-items: center; gap: 5px; }
+  .chart-wrap.short { height: 120px; }
+
+  /* WiFi */
+  .sub { font-size: 0.8rem; color: var(--muted); font-weight: 600; margin: 14px 0 6px; }
+  .wifi-status { font-size: 0.9rem; line-height: 1.5; }
+  .netlist { list-style: none; margin: 0; padding: 0; }
+  .netlist li {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 0.88rem;
+    background: #0e1013; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px;
+  }
+  .netlist li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .netlist li.pick { cursor: pointer; }
+  .netlist li.pick:hover { border-color: var(--accent); }
+  .netlist .empty { color: var(--muted); background: none; border: none; padding: 2px 0; }
+  .tag { font-size: 0.7rem; border-radius: 4px; padding: 0 5px; border: 1px solid var(--muted); color: var(--muted); }
+  .tag.ok { border-color: var(--ok); color: var(--ok); }
+  .bars { font: 0.8rem ui-monospace, Menlo, monospace; color: var(--muted); flex: none; }
+  .wifi-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .wifi-add input[type="text"], .wifi-add input[type="password"] {
+    flex: 1 1 160px; min-width: 0; background: #0e1013; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px;
+  }
+  .wifi-add label { display: flex; align-items: center; gap: 4px; }
+  .switch-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: #0e1013;
+    border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+  .switch-row input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+  .switch-row b { display: block; margin-bottom: 2px; }
+  .dimmed { opacity: 0.5; }
+
+  /* Help */
+  .param { margin-bottom: 10px; }
+  .param.unused { opacity: 0.55; }
+  /* Settings: label | ? | slider | value, so labels get room and don't wrap */
+  .param .row {
+    display: grid; grid-template-columns: minmax(150px, 1.3fr) 22px minmax(100px, 1fr) 80px;
+    gap: 10px; margin-bottom: 0;
+  }
+  .param .row.fine { margin-top: 6px; }
+  .param .row.fine label { color: var(--muted); padding-left: 12px; }
+  .param .row.fine output { font-size: 0.8rem; color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+  .param .row input[type="number"] { width: 100%; }
+  @media (max-width: 520px) {
+    .param .row { grid-template-columns: minmax(0, 1.4fr) 22px minmax(60px, 1fr) 68px; gap: 8px; }
+    .panel { padding: 12px; }
+  }
+  .qbtn {
+    flex: none; width: 22px; height: 22px; padding: 0; border-radius: 50%;
+    font-size: 0.75rem; font-weight: 700; line-height: 1; color: var(--muted);
+  }
+  .qbtn.on { color: var(--accent); border-color: var(--accent); }
+  .help { display: none; font-size: 0.8rem; color: var(--muted); line-height: 1.45; margin: 6px 0 2px; }
+  .help.show { display: block; }
+  .intro { font-size: 0.8rem; color: var(--muted); line-height: 1.45; margin: -4px 0 12px; }
+  table.ref { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  table.ref td { padding: 5px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  table.ref td:first-child { white-space: nowrap; font-weight: 600; width: 1%; padding-right: 14px; }
+  code { font: 0.85em ui-monospace, Menlo, monospace; background: #0e1013; padding: 1px 4px; border-radius: 4px; }
+
+  /* Header links */
+  .status a { color: var(--accent); }
+
+  /* Record */
+  select.inline { flex: none; width: auto; }
   select {
-    flex: 1;
-    background: #0e1013;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 0.9rem;
+    background: #0e1013; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 8px 10px; font-size: 0.9rem;
   }
-  .note {
-    font-size: 0.8rem;
-    color: var(--muted);
-    margin: 8px 0 0;
+  a.button {
+    display: inline-block; text-decoration: none; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 16px; font-weight: 600; font-size: 0.9rem;
   }
+  a.button.disabled { opacity: 0.45; pointer-events: none; }
 
-  .joystick-wrap {
-    display: flex;
-    justify-content: center;
-    padding: 8px 0 4px;
-  }
+  /* Control: joystick */
+  .joystick-wrap { display: flex; justify-content: center; padding: 8px 0 4px; }
   .joystick-pad {
-    position: relative;
-    width: 220px;
-    height: 220px;
-    border-radius: 50%;
-    background: #0e1013;
-    border: 1px solid var(--border);
-    touch-action: none;
-    user-select: none;
+    position: relative; width: min(100%, 460px); aspect-ratio: 1; border-radius: 50%;
+    background: #0e1013; border: 1px solid var(--border); touch-action: none; user-select: none;
+    -webkit-user-select: none;
   }
+  .joystick-pad::before, .joystick-pad::after {
+    content: ""; position: absolute; background: var(--border);
+  }
+  .joystick-pad::before { left: 50%; top: 8%; bottom: 8%; width: 1px; }
+  .joystick-pad::after { top: 50%; left: 8%; right: 8%; height: 1px; }
   .joystick-nub {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    background: var(--accent);
-    transform: translate(-50%, -50%);
-    pointer-events: none;
+    position: absolute; left: 50%; top: 50%; width: 30%; height: 30%; border-radius: 50%;
+    background: var(--accent); transform: translate(-50%, -50%); pointer-events: none; z-index: 1;
   }
+  .joystick-pad.disabled .joystick-nub { background: var(--muted); }
+  .control-row { display: grid; grid-template-columns: 1fr minmax(320px, 1.2fr); gap: 0 16px; align-items: start; }
+  @media (max-width: 900px) { .control-row { grid-template-columns: 1fr; } }
+  .gp-row { display: flex; gap: 10px; align-items: center; }
+  .gp-row select { flex: 1; min-width: 0; }
+
+  /* Modal (in-page confirm) */
+  #modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    align-items: center; justify-content: center; padding: 20px; z-index: 10;
+  }
+  #modal.show { display: flex; }
+  #modal .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; max-width: 420px; }
+  #modal p { margin: 0 0 14px; line-height: 1.45; }
+  #modal .actions { justify-content: flex-end; }
+
+  /* Log + toast */
+  #log {
+    height: calc(100vh - 260px); min-height: 240px; overflow-y: auto; background: #0e1013; border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font: 13px/1.45 ui-monospace, Menlo, monospace; color: var(--text);
+  }
+  #log .pg { color: var(--accent); }
+  #log .sep { color: var(--warn); }
+  .pg { color: var(--accent); }
+  #toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+    padding: 10px 18px; border-radius: 8px; font-weight: 600; opacity: 0;
+    transition: opacity 0.25s; pointer-events: none; background: var(--ok); color: #04170b; z-index: 20;
+  }
+  #toast.show { opacity: 0.95; }
+  #toast.bad { background: var(--bad); color: #200404; }
+  .muted { color: var(--muted); font-size: 0.8rem; }
 </style>
 </head>
 <body>
-  <h1>LQR Tuner</h1>
-  <div class="status">
-    <span class="dot" id="dot"></span>
-    <span id="statusText">Connecting...</span>
-  </div>
-
-  <div class="panel">
-    <h2>Gains (K)</h2>
-    <div class="row"><label for="K0">K0 wheel disp.</label><input type="range" id="K0" min="-20" max="20" step="0.01"><output id="K0-val"></output></div>
-    <div class="row"><label for="K1">K1 tilt angle</label><input type="range" id="K1" min="-30" max="30" step="0.01"><output id="K1-val"></output></div>
-    <div class="row"><label for="K2">K2 yaw angle</label><input type="range" id="K2" min="-20" max="20" step="0.01"><output id="K2-val"></output></div>
-    <div class="row"><label for="K3">K3 wheel vel.</label><input type="range" id="K3" min="-2" max="2" step="0.001"><output id="K3-val"></output></div>
-    <div class="row"><label for="K4">K4 tilt vel.</label><input type="range" id="K4" min="-3" max="3" step="0.001"><output id="K4-val"></output></div>
-    <div class="row"><label for="K5">K5 yaw vel.</label><input type="range" id="K5" min="-2" max="2" step="0.001"><output id="K5-val"></output></div>
-  </div>
-
-  <div class="panel">
-    <h2>Setpoints</h2>
-    <div class="row"><label for="angleSetPoint">Angle setpoint (deg)</label><input type="range" id="angleSetPoint" min="-20" max="20" step="0.1"><output id="angleSetPoint-val"></output></div>
-    <div class="row"><label for="angleSetPointFine">Fine adjust</label><input type="range" id="angleSetPointFine" min="-1" max="1" step="0.01" value="0"><output id="angleSetPointFine-val">+0.00</output></div>
-    <div class="row"><label for="deactivationAngle">Deactivation (deg)</label><input type="range" id="deactivationAngle" min="0" max="90" step="1"><output id="deactivationAngle-val"></output></div>
-    <div class="row"><label for="alpha">Filter alpha</label><input type="range" id="alpha" min="0.9" max="1" step="0.0001"><output id="alpha-val"></output></div>
-  </div>
-
-  <div class="panel">
-    <h2>Drive gains</h2>
-    <div class="row"><label for="turnCurrentGain">Turn gain (A)</label><input type="range" id="turnCurrentGain" min="0" max="1" step="0.01"><output id="turnCurrentGain-val"></output></div>
-    <div class="row"><label for="moveCurrentGain">Move gain (A)</label><input type="range" id="moveCurrentGain" min="0" max="1" step="0.01"><output id="moveCurrentGain-val"></output></div>
-  </div>
-
-  <div class="panel">
-    <h2>Rates (applied after reboot)</h2>
-    <div class="row"><label for="IMUsampleRate">IMU / control rate (Hz)</label><input type="number" id="IMUsampleRate" min="50" max="1000" step="10"></div>
-  </div>
-
-  <button id="pauseBtn">Pause</button>
-
-  <div class="panel">
-    <h2>Controller input</h2>
-    <div class="row">
-      <label for="gamepadSelect">Device</label>
-      <select id="gamepadSelect">
-        <option value="-1">Touch joystick only</option>
-      </select>
-      <button type="button" id="gamepadRescan" class="secondary">Rescan</button>
-    </div>
-    <p class="note" id="gamepadNote">No controller detected — press a button on it, then hit Rescan.</p>
-  </div>
-
-  <div class="panel">
-    <h2>Drive joystick</h2>
-    <div class="joystick-wrap">
-      <div class="joystick-pad" id="joystickPad">
-        <div class="joystick-nub" id="joystickNub"></div>
+  <header class="top">
+    <div class="titlebar">
+      <h1>Self-balancing Robot<span class="name" id="robotName"></span></h1>
+      <div class="status">
+        <span class="dot" id="dot"></span>
+        <span id="statusText">Connecting...</span>
+        <span id="netInfo"></span>
+        <a id="openBrowser" href="/" target="_blank" rel="noopener"
+           title="Captive portal windows block some controls and all downloads - open the page in Safari / Chrome instead">Open in browser ↗</a>
       </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab" role="tab" data-tab="tune">Tune</button>
+      <button type="button" class="tab" role="tab" data-tab="control">Control</button>
+      <button type="button" class="tab" role="tab" data-tab="drivers">Drivers</button>
+      <button type="button" class="tab" role="tab" data-tab="wifi">WiFi</button>
+      <button type="button" class="tab" role="tab" data-tab="log">Log <span class="count" id="logCount"></span></button>
+      <button type="button" class="tab" role="tab" data-tab="info">Info</button>
+    </nav>
+  </header>
+
+  <!-- ===================== Tune ===================== -->
+  <section class="tabpage" id="tab-tune">
+    <div class="live-row">
+      <div class="panel live-main">
+        <h2>Live <button id="pauseBtn" class="small" disabled>Pause</button></h2>
+        <div class="tiles">
+          <div class="tile"><div class="k">State</div><div class="v" id="tState">-</div></div>
+          <div class="tile"><div class="k">Battery</div><div class="v" id="tBatt">-</div>
+            <div class="gauge"><div id="tBattBar"></div></div><div class="k" id="tBattTime">&nbsp;</div></div>
+          <div class="tile"><div class="k">Tilt from set point</div><div class="v" id="tDev">-</div></div>
+          <div class="tile"><div class="k">Set point</div><div class="v" id="tSp">-</div></div>
+          <div class="tile"><div class="k">Wheel speed</div><div class="v" id="tWheel">-</div></div>
+          <div class="tile"><div class="k">Loop rate</div><div class="v" id="tHz">-</div></div>
+          <div class="tile wide"><div class="k">Motor drivers</div>
+            <div class="drivers">
+              <span class="side">Left</span><span id="tDrvL">-</span>
+              <span class="side">Right</span><span id="tDrvR">-</span>
+            </div>
+            <div class="actions" style="margin-top:6px"><button id="retryBtn" class="small" hidden>Retry motor start</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="live-charts">
+        <div class="panel">
+          <h2>Battery <span class="muted" id="battChartNow"></span></h2>
+          <div class="chart-wrap short"><canvas id="battChart"></canvas></div>
+          <div class="legend" id="battLegend"><span><span class="swatch shade"></span> Balancing</span>
+            <span><span class="swatch shade-rec"></span> Recorded</span></div>
+        </div>
+        <div class="panel">
+          <h2>Chart <span><select id="chartSpan" class="inline" aria-label="Time span"></select>
+            <button id="chartPause" class="small">Pause</button></span></h2>
+          <div class="chart-wrap"><canvas id="chart"></canvas></div>
+          <div class="legend" id="legend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
+        </div>
+        <div class="panel">
+          <h2>IMU (raw axes)</h2>
+          <div class="chart-wrap short"><canvas id="imuChart"></canvas></div>
+          <div class="legend" id="imuLegend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
+          <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to all the charts. History covers
+            the time this page has been open (up to 1 hour); over 1 min, each point is a 1 s average with its min-max range shaded.
+            The battery voltage comes from the two motor drivers, which share the pack.</p>
+        </div>
+      </div>
+
+      <div class="live-side">
+      <div class="panel">
+        <h2>Record</h2>
+        <div class="actions">
+          <select id="capSecs" class="inline" aria-label="Duration">
+            <option value="5">5 s</option><option value="10" selected>10 s</option><option value="20">20 s</option>
+            <option value="30">30 s</option><option value="60">60 s</option>
+          </select>
+          <select id="capTrigger" class="inline" aria-label="Start">
+            <option value="balance" selected>Start when it starts balancing</option>
+            <option value="now">Start now</option>
+          </select>
+          <button id="capBtn" class="primary" disabled>Record</button>
+          <a id="capDownload" class="button disabled" href="/capture.csv" download>Download CSV</a>
+        </div>
+        <p class="muted"><span id="capStatus">No recording yet.</span> Every control step (tilt, rates, wheel
+          speeds, LQR and motor currents, position and heading hold, joystick, raw IMU axes) plus the settings in use. To catch a stand-up: lay it down,
+          choose <b>Start when it starts balancing</b>, press Record, then stand it up. Downloads need a normal
+          browser (<b>Open in browser</b>, top right).</p>
+      </div>
+      <div class="panel">
+        <h2>Settings</h2>
+        <div class="actions">
+          <button id="saveBtn" class="primary" disabled>Save to flash</button>
+          <button id="loadBtn" disabled>Revert to saved</button>
+          <button id="defaultsBtn" disabled>Factory defaults</button>
+        </div>
+        <p class="muted">Changes apply immediately but are lost on restart until saved. Saving stalls the
+          controller for a moment (flash writes pause both CPU cores), so the robot may twitch - best done while
+          it's paused or lying down. Press <b>?</b> next to any setting for an explanation; double-click a label
+          to reset just that setting.</p>
+      </div>
+    </div>
+
+    </div>
+
+    <div id="settingsPanels" class="grid"></div>
+  </section>
+
+  <!-- ===================== Control ===================== -->
+  <section class="tabpage" id="tab-control" hidden>
+    <div class="control-row">
+      <div class="panel">
+        <h2>Status</h2>
+        <div class="tiles">
+          <div class="tile"><div class="k">State</div><div class="v" id="cState">-</div></div>
+          <div class="tile"><div class="k">Battery</div><div class="v" id="cBatt">-</div></div>
+          <div class="tile"><div class="k">Tilt from set point</div><div class="v" id="cDev">-</div></div>
+          <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
+        </div>
+        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
+      </div>
+      <div>
+        <div class="panel">
+          <h2>Drive <span class="muted" id="joyReadout"></span></h2>
+          <div class="joystick-wrap">
+            <div class="joystick-pad" id="joystickPad"><div class="joystick-nub" id="joystickNub"></div></div>
+          </div>
+          <p class="muted" style="text-align:center">Drag to drive: up/down moves, left/right turns. It stops as soon as
+            you let go (or if this page loses its connection).</p>
+        </div>
+        <div class="panel">
+          <h2>Controller input</h2>
+          <div class="gp-row">
+            <select id="gamepadSelect" aria-label="Controller"><option value="-1">Touch joystick only</option></select>
+            <button type="button" id="gamepadRescan" class="small">Rescan</button>
+          </div>
+          <p class="muted" id="gamepadNote">No controller detected - press a button on it, then hit Rescan.</p>
+          <p class="muted">A gamepad connected to this phone or computer (USB or Bluetooth) drives with its left stick.
+            Needs Chrome or Edge: Firefox only allows gamepads on HTTPS pages. The touch joystick takes over while
+            you hold it. The stick asks for a wheel speed and a turn rate (<b>Top speed</b> and <b>Turn rate</b> under
+            Driving on the Tune tab); let go and the robot holds its position and heading, if the hold gains are set.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== WiFi ===================== -->
+  <!-- ===================== Drivers ===================== -->
+  <section class="tabpage" id="tab-drivers" hidden>
+    <p class="muted" id="drvJob">&nbsp;</p>
+    <div class="pair-row">
+      <div class="panel">
+        <h2>Left driver <button class="small" data-drv="0" data-op="refresh">Refresh</button></h2>
+        <table class="ref" id="drvInfo0"></table>
+        <div class="actions" id="drvActions0"></div>
+        <p class="muted" id="drvResult0"></p>
+      </div>
+      <div class="panel">
+        <h2>Right driver <button class="small" data-drv="1" data-op="refresh">Refresh</button></h2>
+        <table class="ref" id="drvInfo1"></table>
+        <div class="actions" id="drvActions1"></div>
+        <p class="muted" id="drvResult1"></p>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>About</h2>
+      <p class="muted">Settings on the motor driver boards themselves, changed over CAN (driver firmware 1.1 or later;
+        older firmware is set up over USB serial). <b>Invert</b> and the alignment are pending until <b>Save &amp;
+        reboot</b>, which stops that motor, writes the driver's flash and restarts it. Nothing here works while the
+        robot is balancing - pause it or lay it down first.</p>
+      <p class="muted"><b>Re-run alignment</b> finds the angle between the motor's magnet sensor and its windings
+        again (needed after the motor, magnet or sensor is remounted). The driver reboots twice and the wheel turns a
+        little, so lay the robot on its side or lift that wheel.</p>
+      <h2 style="margin-top:14px">Wheels</h2>
+      <div class="actions">
+        <label>Left wheel: node <select id="drvNodeL" class="inline"></select></label>
+        <label>Right wheel: node <select id="drvNodeR" class="inline"></select></label>
+        <button id="drvSwap">Swap</button>
+      </div>
+      <p class="muted">Each driver board has a CAN node ID (1-15); these choose which boards are this robot's wheels
+        (saved here, nothing changes on the boards). <b>Swap</b> if the wheels respond to the wrong side's commands.
+        Nodes marked "heard" are reporting on the bus now. <b>Change node ID</b> (under a driver) changes the ID saved
+        on that board itself, e.g. to make room for more boards; this robot follows it.</p>
+      <p class="bad-text" id="drvLegacy" hidden>A board with firmware 1.0/1.1 set to "right" is reporting on the
+        bus (ID 0x100). Update it to 1.2 over USB: this firmware sends motor currents in the new format.</p>
+    </div>
+  </section>
+
+  <section class="tabpage" id="tab-wifi" hidden>
+    <div class="pair-row">
+      <div class="panel">
+        <h2>Connection
+          <span><button id="wifiScanBtn" class="small" disabled>Scan</button> <button id="wifiConnectBtn" class="small" disabled>Connect now</button></span>
+        </h2>
+        <label class="switch-row" for="apOnly">
+          <input type="checkbox" id="apOnly" disabled>
+          <span><b>Access point only</b><span class="muted">The robot never joins a network and always hosts its own
+            access point, so visitors can connect straight to it (and the printed QR code works). Use this for open
+            days. Turn it off to join one of the saved networks below, e.g. at home for OTA updates.</span></span>
+        </label>
+        <div class="wifi-status" id="wifiStatus">-</div>
+
+        <div id="savedSection">
+          <div class="sub">Saved networks <span id="wifiCount"></span></div>
+          <ul class="netlist" id="wifiSaved"></ul>
+
+          <div class="sub">Add a network</div>
+          <form class="wifi-add" id="wifiAddForm" autocomplete="off">
+            <input type="text" id="wifiSsid" placeholder="Network name (SSID)" maxlength="32" required>
+            <input type="password" id="wifiPass" placeholder="Password (blank if open)" maxlength="63" autocomplete="new-password">
+            <label class="muted"><input type="checkbox" id="wifiShowPass"> show</label>
+            <button type="submit" class="primary" id="wifiAddBtn" disabled>Save network</button>
+          </form>
+          <p class="muted">With access point only off, the robot joins the strongest saved network in range at
+            power-on; if none is found it hosts its own access point (and keeps looking while nobody is connected to
+            it). Passwords are stored on the robot only and are never sent back to this page.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>In range <span id="wifiScanState"></span></h2>
+        <ul class="netlist" id="wifiNearby"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Log ===================== -->
+  <section class="tabpage" id="tab-log" hidden>
+    <div class="panel">
+      <h2>Log
+        <span>
+          <label class="muted"><input type="checkbox" id="logFollow" checked> follow</label>
+          <button id="logExport" class="small">Export</button> <button id="logClear" class="small">Clear</button>
+        </span>
+      </h2>
+      <p class="muted">Messages from the robot (start-up, motor drivers, IMU, WiFi, battery, faults - most of what's on
+        the serial port) with its uptime, and <span class="pg">actions from this page</span> with the clock time.
+        The robot keeps its last 80 messages, so this fills in when you connect.</p>
+      <div id="log"></div>
+    </div>
+  </section>
+
+  <!-- ===================== Info ===================== -->
+  <section class="tabpage" id="tab-info" hidden>
+    <div class="pair-row">
+      <div>
+        <div class="panel">
+          <h2>This robot</h2>
+          <table class="ref">
+            <tr><td>Name / WiFi</td><td id="iName">-</td></tr>
+            <tr><td>WiFi password</td><td id="iPass">-</td></tr>
+            <tr><td>Address</td><td>http://192.168.71.1/ on its own access point;
+              <span id="iHost">-</span> on a home network</td></tr>
+            <tr><td>Scan-to-join sign</td><td>Run <code>python tools/wifi_qr.py <span id="iSuffix">xxxxxx</span></code>
+              in the EBS-SBR repo.</td></tr>
+            <tr><td>Firmware</td><td id="buildInfo">-</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <h2>Motor drivers</h2>
+          <table class="ref" id="drvTable">
+            <tr><td>Left</td><td id="iDrvL">-</td></tr>
+            <tr><td>Right</td><td id="iDrvR">-</td></tr>
+          </table>
+          <p class="muted">The controller starts FOC on each driver in turn (the wheel twitches during its alignment,
+            unless the driver has a stored alignment), and restarts a driver that resets. After 3 failed starts it
+            gives up; <b>Retry motor start</b> (Tune tab) lets it try again.</p>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <h2>Starting up</h2>
+          <table class="ref">
+            <tr><td>Power on</td><td>Leave it lying still. WiFi comes up within a few seconds, then the motor drivers
+              start, then the gyro is zeroed (status LED: 3 slow purple flashes, then 3 quick ones when done).</td></tr>
+            <tr><td>Balancing</td><td>Stand it upright and hold it still for a moment: it starts once it's within the
+              start angle of the set point and steady, then balances until it tips past the cut-out angle. Lay it down
+              (or let it fall) and the motors switch off. If the wheels spin up (lifted, or after a crash) it stops
+              and waits to be stood up again.</td></tr>
+            <tr><td>Pause</td><td>Holds the motors at 0 A until resumed (not saved: it's balancing again after a restart).</td></tr>
+            <tr><td>Low battery</td><td>Below the battery cutoff (Tune tab, System) it stops balancing until the pack
+              is charged or swapped.</td></tr>
+            <tr><td>OLED</td><td>Shows the state, tilt, set point, motor currents and driver states, or a fault
+              screen naming the problem.</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <h2>Using this page</h2>
+          <p class="intro">When a phone or Mac joins the robot's access point it opens this page in a captive-portal
+            window. That's a cut-down browser: it can block buttons, gamepads and downloads. If anything misbehaves,
+            open the page in a normal browser instead:</p>
+          <div class="actions">
+            <a id="openBrowser2" class="button" href="/" target="_blank" rel="noopener">Open in browser ↗</a>
+            <button type="button" id="copyAddr">Copy address</button>
+          </div>
+          <p class="muted" id="pageAddr"></p>
+          <p class="intro">On iOS, choose "Use Other Network" / "Use Without Internet" if asked, so the phone stays
+            connected to the robot.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast"></div>
+  <div id="modal" role="dialog" aria-modal="true">
+    <div class="box">
+      <p id="modalText"></p>
+      <div class="actions"><button id="modalCancel">Cancel</button><button id="modalOk" class="primary">OK</button></div>
     </div>
   </div>
 
 <script>
-const fields = ["K0","K1","K2","K3","K4","K5","angleSetPoint","deactivationAngle","alpha","turnCurrentGain","moveCurrentGain"];
-const rateFields = ["IMUsampleRate"];
-let ws;
-let paused = false;
-let activeField = null; // field currently being dragged, skip remote updates for it
+"use strict";
+const $ = (id) => document.getElementById(id);
 
-const dot = document.getElementById("dot");
-const statusText = document.getElementById("statusText");
-const pauseBtn = document.getElementById("pauseBtn");
+// ---------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------
+function decimals(step) {
+  const s = String(step);
+  return s.includes(".") ? s.length - s.indexOf(".") - 1 : 0;
+}
 
-// --- WebSocket with reconnect + staleness watchdog ---
-// Build the URL from location.host: the firmware always redirects to the IP,
-// so this is 192.168.4.1 whether opened in the portal sheet or a browser.
-// The firmware sends a {"hb":1} heartbeat every second; if we hear nothing
-// for STALE_MS the socket is presumed dead (portal sheets, especially on
-// iOS, can freeze a socket without ever firing 'close') and is recycled.
-const STALE_MS = 3500;
+// Only touch the DOM when a value actually changes. Rewriting an element
+// 20x a second (telemetry rate) can swallow taps on phones - the button
+// under your finger is replaced between touch-down and touch-up.
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+function setClass(el, cls) { if (el.className !== cls) el.className = cls; }
+
+// In-page replacement for confirm(): captive portal sheets silently block
+// alert/confirm, so buttons that asked first appeared to do nothing.
+function ask(message, okLabel = "OK", danger = false) {
+  return new Promise((resolve) => {
+    const m = $("modal");
+    $("modalText").textContent = message;
+    const ok = $("modalOk"), cancel = $("modalCancel");
+    ok.textContent = okLabel;
+    ok.className = danger ? "danger" : "primary";
+    const done = (v) => { m.classList.remove("show"); ok.onclick = cancel.onclick = null; resolve(v); };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    m.classList.add("show");
+  });
+}
+
+let toastTimer = null;
+function toast(text, ok = true) {
+  const t = $("toast");
+  t.textContent = text;
+  t.className = "show" + (ok ? "" : " bad");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ok ? "" : "bad"; }, 2500);
+}
+
+function storageGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+function storageSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+
+// Log tab: device messages (uptime) and this page's actions (clock time).
+const LOG_MAX = 500;
+let lastDeviceSeq = 0, lastBoot = null, unseenLog = 0;
+
+function appendLog(text, cls) {
+  const el = $("log");
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = text;
+  el.appendChild(line);
+  while (el.childElementCount > LOG_MAX) el.firstChild.remove();
+  if ($("logFollow").checked) el.scrollTop = el.scrollHeight;
+}
+
+function log(text) {
+  appendLog(`${new Date().toLocaleTimeString()}  ${text}`, "pg");
+}
+
+function deviceLog(boot, lines) {
+  if (boot !== lastBoot) {
+    if (lastBoot !== null) appendLog("--- robot restarted ---", "sep");
+    lastBoot = boot;
+    lastDeviceSeq = 0;
+  }
+  for (const l of lines) {
+    if (l.seq <= lastDeviceSeq) continue; // already shown (backlog re-sent on reconnect)
+    lastDeviceSeq = l.seq;
+    appendLog(`+${(l.ms / 1000).toFixed(3).padStart(9)}  ${l.text}`);
+    if (currentTab !== "log") unseenLog++;
+  }
+  setText($("logCount"), unseenLog ? String(Math.min(unseenLog, 99)) : "");
+}
+$("logClear").onclick = () => { $("log").textContent = ""; };
+
+// ---------------------------------------------------------------------
+// Tabs
+// ---------------------------------------------------------------------
+const TABS = ["tune", "control", "drivers", "wifi", "log", "info"];
+let currentTab = "tune";
+function showTab(name) {
+  if (!TABS.includes(name)) name = "tune";
+  currentTab = name;
+  for (const t of TABS) $("tab-" + t).hidden = t !== name;
+  document.querySelectorAll(".tab").forEach(b => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on);
+  });
+  if (name === "log") {
+    unseenLog = 0;
+    setText($("logCount"), "");
+    const el = $("log");
+    el.scrollTop = el.scrollHeight;
+  }
+  try { history.replaceState(null, "", "#" + name); } catch (e) {}
+}
+document.querySelectorAll(".tab").forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
+showTab(location.hash.slice(1));
+window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+$("logExport").onclick = () => {
+  const blob = new Blob([$("log").innerText], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (robotName || "robot") + "-log.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// ---------------------------------------------------------------------
+// WebSocket with reconnect + staleness watchdog
+// ---------------------------------------------------------------------
+// Telemetry arrives every telemetryMs, so silence means the socket is dead
+// (captive portal sheets can freeze a socket without firing 'close').
+let ws = null;
 let retryDelay = 500, retryTimer = null, lastMsg = 0;
+let telemetryMs = 50;
+let robotName = "";
+
+const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
+
+function setConnected(on, text) {
+  $("dot").classList.toggle("connected", on);
+  $("statusText").textContent = text;
+  for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
+                    "wifiAddBtn", "capBtn", "apOnly"]) $(id).disabled = !on;
+  $("joystickPad").classList.toggle("disabled", !on);
+  if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
+}
 
 function scheduleReconnect() {
   if (retryTimer) return;
   retryTimer = setTimeout(() => { retryTimer = null; connect(); }, retryDelay);
-  retryDelay = Math.min(retryDelay * 2, 5000); // exponential backoff, capped
+  retryDelay = Math.min(retryDelay * 2, 5000);
 }
 
 function connect() {
-  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  statusText.textContent = "Connecting...";
+  setConnected(false, "Connecting...");
   ws = new WebSocket(`ws://${location.host}/ws`);
-
   ws.onopen = () => {
     retryDelay = 500;
     lastMsg = Date.now();
-    dot.classList.add("connected");
-    statusText.textContent = "Connected";
+    setConnected(true, "Connected");
+    log("Connected");
   };
-
   ws.onclose = () => {
-    dot.classList.remove("connected");
-    statusText.textContent = "Disconnected - retrying...";
+    setConnected(false, "Disconnected - retrying...");
     scheduleReconnect();
   };
-
   ws.onerror = () => ws.close();
-
   ws.onmessage = (evt) => {
     lastMsg = Date.now();
-    let state;
-    try { state = JSON.parse(evt.data); } catch (e) { return; }
-    if (!state.K) return; // heartbeat or other non-state message
-    fields.forEach((f, idx) => {
-      if (f === activeField) return;
-      const el = document.getElementById(f);
-      const val = f.startsWith("K") ? state.K[Number(f[1])] : state[f];
-      el.value = val;
-      document.getElementById(f + "-val").textContent = formatVal(val);
-    });
-    rateFields.forEach(f => {
-      if (f === activeField) return;
-      document.getElementById(f).value = state[f];
-    });
-    paused = state.paused;
-    updatePauseButton();
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch (e) { return; }
+    const handler = handlers[msg.type];
+    if (handler) handler(msg);
   };
 }
 
 setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsg > STALE_MS) ws.close();
+  const staleMs = Math.max(3500, telemetryMs * 4);
+  if (isOpen() && Date.now() - lastMsg > staleMs) ws.close();
 }, 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) connect(); });
 
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) connect(); // no-op if already open/connecting
-});
-
-function formatVal(v) {
-  return Number(v).toFixed(3).replace(/0+$/,'').replace(/\.$/,'');
+function send(obj) {
+  if (isOpen()) ws.send(JSON.stringify(obj));
 }
 
-function sendSet(key, value) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ cmd: "set", key, value: Number(value) }));
+// ---------------------------------------------------------------------
+// Settings: controls are generated from the firmware's "schema" message
+// ---------------------------------------------------------------------
+// Introductions for each settings panel (keyed by the firmware's group names).
+const GROUP_HELP = {
+  "Balance gains (LQR)":
+    "The controller measures the tilt, how fast it's tipping and how fast the wheels turn, many times a second, " +
+    "and sets the total wheel current to -(K1 × tilt from set point + K4 × tilt rate + K3 × wheel speed error " +
+    "+ K0 × position error), split equally between the wheels and limited to ±1 A per wheel. Tune K1 and K4 " +
+    "first (stiffness and damping), then K3, then K0 (under Position & heading hold).",
+  "Position & heading hold":
+    "Stops the drift. K0 holds the position (forward/back); K2 and K5 hold the heading using the gyro's yaw " +
+    "axis, by driving the wheels differentially. Both hold where the robot started balancing, moved along by " +
+    "the joystick. Set 'Yaw direction flip' first (see its help), then K5, then K2. Balancing always gets " +
+    "priority: the turning current only gets what's left of each wheel's ±1 A.",
+  "Balance":
+    "Where 'upright' is, when to give up, and how the tilt angle is measured.",
+  "Driving":
+    "What the joystick or gamepad (Control tab) asks for: a wheel speed and a turn rate. The controller leans the " +
+    "robot to reach the speed, and the position hold follows it, so releasing the stick stops and holds the spot.",
+  "System":
+    "Battery protection, the live data rate and recordings.",
+};
+
+const params = {};        // key -> schema entry + elements
+let schemaKey = "";
+let activeKey = null;     // control being edited: ignore remote updates for it
+let dirty = false;
+
+function buildSettings(list) {
+  const key = list.map(p => p.key).join(",");
+  if (key === schemaKey) return; // unchanged (reconnect)
+  schemaKey = key;
+
+  const container = $("settingsPanels");
+  container.textContent = "";
+  const panels = {};
+  for (const p of list) {
+    if (p.hidden) continue; // set elsewhere (e.g. the Drivers tab)
+    if (!panels[p.group]) {
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.innerHTML = `<h2></h2>`;
+      panel.firstChild.textContent = p.group;
+      if (GROUP_HELP[p.group]) {
+        const intro = document.createElement("p");
+        intro.className = "intro";
+        intro.textContent = GROUP_HELP[p.group];
+        panel.appendChild(intro);
+      }
+      container.appendChild(panel);
+      panels[p.group] = panel;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "param" + (p.unused ? " unused" : "");
+    const row = document.createElement("div");
+    row.className = "row";
+    const id = "p_" + p.key;
+    row.innerHTML =
+      `<label for="${id}"></label>` +
+      `<input type="range" id="${id}" min="${p.min}" max="${p.max}" step="${p.step}">` +
+      `<input type="number" min="${p.min}" max="${p.max}" step="${p.step}" aria-label="${p.key}">`;
+    const label = row.children[0];
+    label.textContent = p.label;
+    label.title = `${p.key} (default ${p.default}). Double-click to reset to default.`;
+    const badge = (text, cls, title) => {
+      const b = document.createElement("span");
+      b.className = "badge" + (cls ? " " + cls : "");
+      b.textContent = text;
+      b.title = title;
+      label.appendChild(b);
+    };
+    if (p.reboot) badge("reboot", "", "Takes effect after a reboot");
+    if (p.unused) badge("unused", "dim", "Not used by the controller at the moment");
+    wrap.appendChild(row);
+    let help = null;
+    if (p.help) {
+      const q = document.createElement("button");
+      q.type = "button";
+      q.className = "qbtn";
+      q.textContent = "?";
+      q.title = "What does this do?";
+      q.setAttribute("aria-label", `Help: ${p.label}`);
+      help = document.createElement("div");
+      help.className = "help";
+      help.textContent = p.help + ` (Default ${p.default}, range ${p.min} to ${p.max}.)`;
+      q.onclick = () => { help.classList.toggle("show"); q.classList.toggle("on"); };
+      row.insertBefore(q, row.children[1]);
+    } else {
+      row.insertBefore(document.createElement("span"), row.children[1]);
+    }
+    const entry = { ...p, range: row.querySelector('input[type="range"]'), number: row.querySelector('input[type="number"]'), dp: decimals(p.step) };
+    if (p.fine) wrap.appendChild(makeFineRow(entry));
+    if (help) wrap.appendChild(help);
+    panels[p.group].appendChild(wrap);
+
+    params[p.key] = entry;
+    wireControl(entry, label);
   }
 }
 
-function updatePauseButton() {
-  pauseBtn.textContent = paused ? "Resume" : "Pause";
-  pauseBtn.classList.toggle("paused", paused);
-}
-
-[...fields, ...rateFields].forEach(f => {
-  const el = document.getElementById(f);
-  el.addEventListener("focus", () => activeField = f);
-  el.addEventListener("blur", () => activeField = null);
-  el.addEventListener("input", () => {
-    if (fields.includes(f)) {
-      document.getElementById(f + "-val").textContent = formatVal(el.value);
+// Sliders send while dragging, throttled to one message per 60 ms with the
+// final value always sent, so the firmware isn't flooded.
+function makeSender(key) {
+  let timer = null, latest = null, lastSent = null;
+  const flush = () => {
+    timer = null;
+    if (latest !== lastSent) {
+      send({ cmd: "set", key, value: latest });
+      lastSent = latest;
     }
-    sendSet(f, el.value);
+  };
+  return (value) => {
+    latest = value;
+    if (timer) return;          // trailing flush will pick it up
+    flush();                    // leading edge: send now
+    timer = setTimeout(flush, 60);
+  };
+}
+
+function wireControl(p, label) {
+  const sendValue = makeSender(p.key);
+  p.sendValue = sendValue;
+  const clamp = (v) => Math.min(p.max, Math.max(p.min, v));
+
+  for (const el of [p.range, p.number]) {
+    el.addEventListener("focus", () => { activeKey = p.key; });
+    el.addEventListener("blur", () => { if (activeKey === p.key) activeKey = null; });
+  }
+  p.range.addEventListener("pointerdown", () => { activeKey = p.key; });
+  p.range.addEventListener("pointerup", () => { activeKey = null; });
+
+  p.range.addEventListener("input", () => {
+    const v = Number(p.range.value);
+    p.number.value = v.toFixed(p.dp);
+    sendValue(v);
   });
-});
-
-// --- Angle setpoint fine adjust ---
-// The main slider spans -20..20deg, so each pixel of drag is worth far more
-// than the 0.1deg the setpoint is sensitive to. This slider instead acts as
-// a small relative nudge (+/-1deg, 0.01deg steps) applied on top of whatever
-// the main slider reads when the drag starts, then re-centers to 0 once
-// released so it's always ready for another nudge in either direction.
-const angleMain = document.getElementById("angleSetPoint");
-const angleFine = document.getElementById("angleSetPointFine");
-const angleFineVal = document.getElementById("angleSetPointFine-val");
-let angleFineBase = 0;
-
-function formatFine(v) {
-  const n = Number(v);
-  return (n >= 0 ? "+" : "") + n.toFixed(2);
+  p.number.addEventListener("change", () => {
+    const v = Number(p.number.value);
+    if (!Number.isFinite(v)) return;
+    const c = clamp(v);
+    p.number.value = c.toFixed(p.dp);
+    p.range.value = c;
+    send({ cmd: "set", key: p.key, value: c });
+    log(`${p.key} = ${c}`);
+  });
+  p.range.addEventListener("change", () => log(`${p.key} = ${p.range.value}`));
+  label.addEventListener("dblclick", () => {
+    send({ cmd: "set", key: p.key, value: p.default });
+    log(`${p.key} reset to default ${p.default}`);
+  });
 }
 
-function angleFineStart() {
-  activeField = "angleSetPoint"; // block remote sync of the main slider mid-drag
-  angleFineBase = Number(angleMain.value);
+// Fine adjust: the main slider spans a wide range, so each pixel of drag is
+// worth far more than the setting is sensitive to. This slider instead
+// nudges the value by up to ±1 (in 0.01 steps) relative to where it was when
+// the drag started, then re-centres when released, ready for another nudge.
+function makeFineRow(p) {
+  const row = document.createElement("div");
+  row.className = "row fine";
+  row.innerHTML = `<label>Fine adjust</label><span></span>` +
+    `<input type="range" min="-1" max="1" step="0.01" value="0" aria-label="${p.key} fine adjust"><output>+0.00</output>`;
+  const fine = row.querySelector("input"), out = row.querySelector("output");
+  let base = 0;
+  const fmt = (v) => (v >= 0 ? "+" : "") + Number(v).toFixed(2);
+  const start = () => { activeKey = p.key; base = Number(p.range.value); };
+  const end = () => {
+    if (activeKey === p.key) activeKey = null;
+    if (Number(fine.value) !== 0) log(`${p.key} = ${p.range.value}`);
+    fine.value = 0;
+    out.textContent = fmt(0);
+  };
+  fine.addEventListener("pointerdown", start);
+  fine.addEventListener("focus", start);
+  fine.addEventListener("pointerup", end);
+  fine.addEventListener("pointercancel", end);
+  fine.addEventListener("blur", end);
+  fine.addEventListener("input", () => {
+    const target = Math.min(p.max, Math.max(p.min, base + Number(fine.value)));
+    p.range.value = target;
+    p.number.value = target.toFixed(p.dp);
+    out.textContent = fmt(fine.value);
+    p.sendValue(Number(target.toFixed(p.dp)));
+  });
+  return row;
 }
 
-function angleFineEnd() {
-  activeField = null;
-  angleFine.value = 0;
-  angleFineVal.textContent = formatFine(0);
+function applySettings(values) {
+  for (const [key, value] of Object.entries(values)) {
+    const p = params[key];
+    if (!p || key === activeKey) continue;
+    p.range.value = value;
+    p.number.value = Number(value).toFixed(p.dp);
+  }
+  if (values.telemetryMs) telemetryMs = values.telemetryMs;
 }
 
-angleFine.addEventListener("pointerdown", angleFineStart);
-angleFine.addEventListener("focus", angleFineStart);
-angleFine.addEventListener("pointerup", angleFineEnd);
-angleFine.addEventListener("pointercancel", angleFineEnd);
-angleFine.addEventListener("blur", angleFineEnd);
-angleFine.addEventListener("input", () => {
-  const target = Math.min(20, Math.max(-20, angleFineBase + Number(angleFine.value)));
-  angleMain.value = target;
-  document.getElementById("angleSetPoint-val").textContent = formatVal(target);
-  angleFineVal.textContent = formatFine(angleFine.value);
-  sendSet("angleSetPoint", target);
-});
+function updateSaveButton() {
+  const btn = $("saveBtn");
+  btn.textContent = dirty ? "Save to flash *" : "Saved";
+  btn.disabled = !dirty || !isOpen();
+}
 
-pauseBtn.addEventListener("click", () => {
-  paused = !paused;
-  updatePauseButton();
-  sendSet("paused", paused ? 1 : 0);
-});
+$("saveBtn").onclick = () => { send({ cmd: "save" }); log("Save to flash"); };
+$("loadBtn").onclick = () => { send({ cmd: "load" }); log("Revert to saved"); };
+$("defaultsBtn").onclick = async () => {
+  if (await ask("Restore all settings to factory defaults? (Not saved until you press Save.)", "Restore defaults", true)) {
+    send({ cmd: "defaults" });
+    log("Factory defaults");
+  }
+};
 
-// --- Joystick ---
-// The firmware zeros drive input if it doesn't hear from us for 300ms, so
+// ---------------------------------------------------------------------
+// Live readouts
+// ---------------------------------------------------------------------
+let pausedNow = false;
+function togglePause() {
+  send({ cmd: "pause", paused: !pausedNow });
+  log(pausedNow ? "Resume" : "Pause");
+}
+$("pauseBtn").onclick = togglePause;
+$("pauseBtn2").onclick = togglePause;
+$("retryBtn").onclick = () => { send({ cmd: "motorRetry" }); log("Retry motor start"); };
+
+function setTile(id, text, cls = "") {
+  const el = $(id);
+  setText(el, text);
+  setClass(el, "v " + cls);
+}
+
+const STATE_TEXT = {
+  "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
+  "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
+  "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
+};
+const STATE_CLASS = {
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad",
+};
+const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
+
+function driverText(d, volts, detailed) {
+  const parts = [d.link];
+  if (volts > 0) parts.push(volts.toFixed(2) + " V");
+  const flags = DRV_FLAGS.filter(([bit, name]) => (d.flags & bit) && (detailed || bit !== 2 && bit !== 4)).map(([, n]) => n);
+  if (flags.length) parts.push(flags.join(", "));
+  if (d.err) parts.push(`last error: ${d.err} (${d.errAge} s ago)`);
+  if (detailed && d.tries) parts.push(`start attempts: ${d.tries}`);
+  return parts.join(" · ");
+}
+function driverClass(d) {
+  if (d.link === "RUN") return (d.flags & 8) ? "bad-text" : "ok-text";
+  if (d.link === "FAULT" || d.link === "FAILED") return "bad-text";
+  return "warn-text";
+}
+
+function batteryText(t) {
+  if (!t.battKnown) return "-";
+  return `${t.battPct}% · ${t.batt.toFixed(2)} V` + (t.battLow ? " LOW" : "");
+}
+function batteryClass(t) {
+  return !t.battKnown ? "" : t.battLow || t.battPct <= 10 ? "bad" : t.battPct <= 25 ? "warn" : "";
+}
+
+function showTelemetry(t) {
+  const stateText = STATE_TEXT[t.state] || t.state;
+  const stateCls = STATE_CLASS[t.state] ?? "";
+  setTile("tState", stateText, stateCls);
+  setTile("cState", stateText, stateCls);
+
+  const battCls = batteryClass(t);
+  setTile("tBatt", batteryText(t), battCls);
+  setTile("cBatt", batteryText(t), battCls);
+  const bar = $("tBattBar");
+  bar.style.width = (t.battKnown ? t.battPct : 0) + "%";
+  bar.style.background = `var(--${battCls === "bad" ? "bad" : battCls === "warn" ? "warn" : "ok"})`;
+  setText($("tBattTime"), !t.battKnown ? "No reading from the motor drivers"
+    : t.battLow ? "Balancing stopped - charge me"
+    : t.battMins >= 0 ? `~${t.battMins >= 60 ? Math.floor(t.battMins / 60) + " h " : ""}${t.battMins % 60} min left`
+    : t.battMins === -2 ? "Not discharging"
+    : "Estimating time left...");
+  $("tBattTime").title = "Estimated from how fast the level has fallen over the last 10 minutes; " +
+    "needs ~2 minutes of use, and shows nothing on a bench supply or while idle.";
+
+  const dev = (t.dev >= 0 ? "+" : "") + t.dev.toFixed(2) + "°";
+  setTile("tDev", dev);
+  setTile("cDev", dev);
+  setTile("tSp", t.sp.toFixed(2) + "°");
+  const wheel = t.wheel.toFixed(1) + " rad/s";
+  setTile("tWheel", wheel);
+  setTile("cWheel", wheel);
+  const rate = Number(params.imuRate ? params.imuRate.range.value : 500);
+  setTile("tHz", t.hz + " Hz", t.hz && t.hz < rate * 0.9 ? "warn" : "");
+
+  const volts = [t.battL, t.battR];
+  ["L", "R"].forEach((s, i) => {
+    const d = t.drv[i];
+    const el = $("tDrv" + s);
+    setText(el, driverText(d, volts[i], false));
+    setClass(el, driverClass(d));
+    const el2 = $("iDrv" + s);
+    setText(el2, driverText(d, volts[i], true));
+    setClass(el2, driverClass(d));
+  });
+  const gaveUp = t.drv.some(d => d.link === "FAILED");
+  if ($("retryBtn").hidden !== !gaveUp) $("retryBtn").hidden = !gaveUp;
+
+  pausedNow = t.paused;
+  for (const id of ["pauseBtn", "pauseBtn2"]) {
+    const btn = $(id);
+    setText(btn, pausedNow ? "Resume" : "Pause");
+    setClass(btn, (id === "pauseBtn" ? "small " : "big ") + (pausedNow ? "primary" : "danger"));
+  }
+
+  showCapture(t.cap);
+  setText($("battChartNow"), t.battKnown ? `${t.batt.toFixed(2)} V · ${t.battPct}%` : "no reading");
+  hist.push(t);
+  charts.changed();
+}
+
+// ---------------------------------------------------------------------
+// Chart history. Every telemetry frame is kept for RAW_MS; beyond that,
+// 1 s buckets (min / max / mean per value) are kept for BUCKETS_MS, so long
+// spans stay cheap to store and draw. History only covers the time this
+// page has been open. Missing values (e.g. no battery reading) are NaN and
+// leave a gap.
+// ---------------------------------------------------------------------
+const hist = (() => {
+  const RAW_MS = 60000, BUCKET_MS = 1000, BUCKETS_MS = 3600000;
+  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "batt", "battL", "battR",
+                "yaw", "yref", "hdg", "herr", "perr", "vref", "ycur",
+                "pitch", "gx", "gy", "gz", "ax", "ay", "az"];
+  let raw = [], buckets = [], cur = null, head = 0;
+  let bucketCount = 0; // bumps when a bucket closes
+
+  function newBucket(bt) {
+    const b = { t: bt, min: {}, max: {}, sum: {}, cnt: {}, n: 0, runN: 0, recN: 0 };
+    for (const k of keys) { b.min[k] = Infinity; b.max[k] = -Infinity; b.sum[k] = 0; b.cnt[k] = 0; }
+    return b;
+  }
+
+  function push(t) {
+    if (raw.length && t.t < raw[raw.length - 1].t) { raw = []; buckets = []; cur = null; head = 0; } // rebooted
+    const run = t.state === "balancing";
+    const rec = !!t.cap && t.cap.state === "recording";
+    const v = {};
+    for (const k of keys) v[k] = Number.isFinite(t[k]) ? t[k] : NaN;
+    if (!t.battKnown) v.batt = NaN;
+    if (!(t.battL > 0)) v.battL = NaN;
+    if (!(t.battR > 0)) v.battR = NaN;
+    raw.push({ t: t.t, v, run, rec });
+    // Drop old frames in batches (shift() on every frame is O(n)).
+    while (head < raw.length && raw[head].t < t.t - RAW_MS) head++;
+    if (head > 500) { raw = raw.slice(head); head = 0; }
+
+    const bt = Math.floor(t.t / BUCKET_MS) * BUCKET_MS;
+    if (!cur || cur.t !== bt) {
+      if (cur) {
+        buckets.push(cur);
+        bucketCount++;
+        if (buckets.length > BUCKETS_MS / BUCKET_MS + 60) buckets = buckets.slice(-BUCKETS_MS / BUCKET_MS);
+      }
+      cur = newBucket(bt);
+    }
+    for (const k of keys) {
+      const x = v[k];
+      if (!Number.isFinite(x)) continue;
+      if (x < cur.min[k]) cur.min[k] = x;
+      if (x > cur.max[k]) cur.max[k] = x;
+      cur.sum[k] += x;
+      cur.cnt[k]++;
+    }
+    cur.n++;
+    if (run) cur.runN++;
+    if (rec) cur.recN++;
+  }
+
+  // Points covering the last spanMs before endT: { t, v, min, max, run }.
+  function range(spanMs, endT) {
+    const from = endT - spanMs, out = [];
+    if (spanMs <= RAW_MS) {
+      for (let i = head; i < raw.length; i++) {
+        const p = raw[i];
+        if (p.t >= from && p.t <= endT) out.push({ t: p.t, v: p.v, min: p.v, max: p.v, run: p.run, rec: p.rec });
+      }
+      return { points: out, bucketed: false };
+    }
+    for (const b of cur ? buckets.concat([cur]) : buckets) {
+      if (b.t < from || b.t > endT) continue;
+      const mean = {}, min = {}, max = {};
+      for (const k of keys) {
+        const c = b.cnt[k];
+        mean[k] = c ? b.sum[k] / c : NaN;
+        min[k] = c ? b.min[k] : NaN;
+        max[k] = c ? b.max[k] : NaN;
+      }
+      out.push({ t: b.t + BUCKET_MS / 2, v: mean, min, max, run: b.runN * 2 > b.n, rec: b.recN > 0 });
+    }
+    return { points: out, bucketed: true };
+  }
+
+  const latest = () => (raw.length ? raw[raw.length - 1].t : 0);
+  return { push, range, latest, rawMs: RAW_MS, version: () => bucketCount };
+})();
+
+// ---------------------------------------------------------------------
+// Strip charts (plain canvas; no chart library needed). The span and Pause
+// controls apply to all charts.
+// ---------------------------------------------------------------------
+const charts = (() => {
+  const SPANS = [[10e3, "10 s"], [30e3, "30 s"], [60e3, "1 min"], [300e3, "5 min"], [900e3, "15 min"], [3600e3, "1 h"]];
+  let spanMs = 10e3, paused = false, pausedAt = 0, needsDraw = false, drawnVersion = -1;
+  const list = [];
+
+  const sel = $("chartSpan");
+  for (const [ms, label] of SPANS) {
+    const o = document.createElement("option");
+    o.value = ms; o.textContent = label;
+    sel.appendChild(o);
+  }
+  const savedSpan = +storageGet("chartSpan");
+  if (SPANS.some(([ms]) => ms === savedSpan)) spanMs = savedSpan;
+  sel.value = spanMs;
+  sel.onchange = () => {
+    spanMs = +sel.value;
+    storageSet("chartSpan", spanMs);
+    drawAll();
+  };
+  $("chartPause").onclick = (e) => {
+    paused = !paused;
+    pausedAt = hist.latest();
+    e.target.textContent = paused ? "Resume" : "Pause";
+    drawAll();
+  };
+
+  function spanLabel() { return SPANS.find(([ms]) => ms === spanMs)[1]; }
+
+  // opts: canvas, legend, series [{key,label,colour,on,scale}], symmetric,
+  //       minRange, unit, decimals, shadeRun (balancing), prepend (legend before existing items).
+  //       Recorded spans (a recording running) are always shaded.
+  function make(opts) {
+    const canvas = $(opts.canvas), ctx = canvas.getContext("2d");
+    if (opts.legend) {
+      const legend = $(opts.legend);
+      const first = legend.firstChild;
+      for (const s of opts.series) {
+        const l = document.createElement("label");
+        l.innerHTML = `<input type="checkbox"><span class="swatch"></span><span></span>`;
+        const saved = opts.persist ? storageGet("series." + opts.canvas + "." + s.key) : null;
+        if (saved !== null) s.on = saved === "1";
+        l.children[0].checked = s.on;
+        l.children[1].style.background = s.colour;
+        l.children[2].textContent = s.label;
+        l.children[0].onchange = (e) => {
+          s.on = e.target.checked;
+          if (opts.persist) storageSet("series." + opts.canvas + "." + s.key, s.on ? "1" : "0");
+          draw();
+        };
+        legend.insertBefore(l, first);
+      }
+    }
+
+    function resize() {
+      const r = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      draw();
+    }
+
+    // Calls fn(segment) for each run of consecutive points where s is finite.
+    function segments(points, get, fn) {
+      let seg = [];
+      for (const p of points) {
+        if (Number.isFinite(get(p))) seg.push(p);
+        else if (seg.length) { fn(seg); seg = []; }
+      }
+      if (seg.length) fn(seg);
+    }
+
+    function draw() {
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      if (!w || !h) return; // hidden tab
+      ctx.clearRect(0, 0, w, h);
+      const endT = paused ? pausedAt : hist.latest();
+      const { points, bucketed } = hist.range(spanMs, endT);
+      if (points.length < 2) return;
+      const tStart = endT - spanMs;
+      const on = opts.series.filter((s) => s.on);
+      const sc = (s, v) => v * (s.scale || 1);
+
+      // Y range over what's visible.
+      let lo = Infinity, hi = -Infinity;
+      for (const p of points) for (const s of on) {
+        const a = sc(s, p.min[s.key]), b = sc(s, p.max[s.key]);
+        if (Number.isFinite(a)) lo = Math.min(lo, a, b);
+        if (Number.isFinite(b)) hi = Math.max(hi, a, b);
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = -1; hi = 1; }
+      if (opts.symmetric) { hi = Math.max(1, Math.abs(lo), Math.abs(hi)) * 1.1; lo = -hi; }
+      else {
+        const mid = (lo + hi) / 2, half = Math.max((hi - lo) / 2 * 1.15, (opts.minRange || 0) / 2);
+        lo = mid - half; hi = mid + half;
+      }
+      const x = (t) => ((t - tStart) / spanMs) * w;
+      const y = (v) => 4 + (hi - v) / (hi - lo) * (h - 8);
+
+      // Shaded spans: balancing (battery chart) and recorded (all charts).
+      function shade(flag, colour) {
+        ctx.fillStyle = colour;
+        let from = null;
+        points.forEach((p, i) => {
+          if (p[flag] && from === null) from = p.t;
+          const last = i === points.length - 1;
+          if (from !== null && (!p[flag] || last)) { ctx.fillRect(x(from), 0, x(p.t) - x(from), h); from = null; }
+        });
+      }
+      if (opts.shadeRun) shade("run", "rgba(79,163,255,0.10)");
+      shade("rec", "rgba(255,107,107,0.13)");
+
+      // Grid: zero line (symmetric charts) and 10 time divisions.
+      ctx.strokeStyle = "#2c3038";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (opts.symmetric) { ctx.moveTo(0, y(0)); ctx.lineTo(w, y(0)); }
+      for (let d = 1; d < 10; d++) { const gx = (d / 10) * w; ctx.moveTo(gx, 0); ctx.lineTo(gx, h); }
+      ctx.stroke();
+
+      for (const s of on) {
+        // Bucketed: min-max band behind the mean line.
+        if (bucketed) {
+          ctx.fillStyle = s.colour + "40";
+          segments(points, (p) => p.v[s.key], (seg) => {
+            ctx.beginPath();
+            seg.forEach((p, j) => { const px = x(p.t), py = y(sc(s, p.max[s.key])); j ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+            for (let j = seg.length - 1; j >= 0; j--) ctx.lineTo(x(seg[j].t), y(sc(s, seg[j].min[s.key])));
+            ctx.closePath();
+            ctx.fill();
+          });
+        }
+        ctx.strokeStyle = s.colour;
+        ctx.lineWidth = 1.5;
+        segments(points, (p) => p.v[s.key], (seg) => {
+          ctx.beginPath();
+          seg.forEach((p, j) => { const px = x(p.t), py = y(sc(s, p.v[s.key])); j ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+          ctx.stroke();
+        });
+      }
+
+      // Labels: scale top/bottom left, time span bottom.
+      const dec = opts.decimals ?? 1, unit = opts.unit || "";
+      ctx.fillStyle = "#8b929c";
+      ctx.font = "11px system-ui, sans-serif";
+      ctx.textBaseline = "top";
+      ctx.textAlign = "left";
+      ctx.fillText((opts.symmetric ? "±" : "") + hi.toFixed(dec) + unit, 4, 3);
+      ctx.textBaseline = "bottom";
+      if (!opts.symmetric) ctx.fillText(lo.toFixed(dec) + unit, 4, h - 3);
+      ctx.textAlign = "right";
+      ctx.fillText((paused ? "paused · " : "") + "last " + spanLabel(), w - 4, h - 3);
+    }
+
+    new ResizeObserver(resize).observe(canvas);
+    list.push(draw);
+    return { draw };
+  }
+
+  function drawAll() { needsDraw = false; drawnVersion = hist.version(); for (const d of list) d(); }
+
+  // New frame: redraw on the next animation frame. Bucketed spans (> 1 min)
+  // only change once a second, so they redraw when a bucket closes.
+  function changed() {
+    if (paused || needsDraw || currentTab !== "tune") return;
+    if (spanMs > hist.rawMs && hist.version() === drawnVersion) return;
+    needsDraw = true;
+    requestAnimationFrame(drawAll);
+  }
+
+  return { make, changed };
+})();
+
+charts.make({
+  canvas: "chart", legend: "legend", symmetric: true, persist: true,
+  series: [
+    { key: "dev",   label: "Tilt from set point (°)",  colour: "#4fa3ff", on: true },
+    { key: "lqr",   label: "LQR current (A ×10)",      colour: "#ff9f43", on: true, scale: 10 },
+    { key: "rate",  label: "Tilt rate (°/s ÷10)",      colour: "#3ecf6e", on: false, scale: 0.1 },
+    { key: "wheel", label: "Wheel speed (rad/s)",      colour: "#c77dff", on: false },
+    { key: "cl",    label: "Left current (A ×10)",     colour: "#f06292", on: false, scale: 10 },
+    { key: "cr",    label: "Right current (A ×10)",    colour: "#4dd0e1", on: false, scale: 10 },
+    { key: "vref",  label: "Speed set point (rad/s)",  colour: "#e0c35a", on: false },
+    { key: "perr",  label: "Position error (rad)",     colour: "#a1887f", on: false },
+    { key: "yaw",   label: "Yaw rate (°/s ÷10)",       colour: "#ff6b6b", on: false, scale: 0.1 },
+    { key: "yref",  label: "Turn set point (°/s ÷10)", colour: "#ffb3b3", on: false, scale: 0.1 },
+    { key: "herr",  label: "Heading error (°)",        colour: "#7986cb", on: false },
+    { key: "hdg",   label: "Heading (° ÷10)",          colour: "#9ccc65", on: false, scale: 0.1 },
+    { key: "ycur",  label: "Turn current (A ×10)",     colour: "#ba68c8", on: false, scale: 10 },
+  ],
+});
+charts.make({
+  canvas: "imuChart", legend: "imuLegend", symmetric: true, persist: true,
+  series: [
+    { key: "gx",    label: "Gyro X (°/s)",   colour: "#ff6b6b", on: true },
+    { key: "gy",    label: "Gyro Y (°/s)",   colour: "#3ecf6e", on: false },
+    { key: "gz",    label: "Gyro Z (°/s)",   colour: "#4fa3ff", on: false },
+    { key: "ax",    label: "Accel X (g ×10)", colour: "#ffb3b3", on: false, scale: 10 },
+    { key: "ay",    label: "Accel Y (g ×10)", colour: "#a5e8bd", on: false, scale: 10 },
+    { key: "az",    label: "Accel Z (g ×10)", colour: "#a8d1ff", on: false, scale: 10 },
+    { key: "pitch", label: "Pitch (°)",       colour: "#e0c35a", on: false },
+  ],
+});
+charts.make({
+  canvas: "battChart", legend: "battLegend", shadeRun: true, minRange: 0.2, unit: " V", decimals: 2, persist: true,
+  series: [
+    { key: "batt",  label: "Average (smoothed ~5 s)", colour: "#3ecf6e", on: true },
+    { key: "battL", label: "Left driver",             colour: "#4fa3ff", on: false },
+    { key: "battR", label: "Right driver",            colour: "#ff9f43", on: false },
+  ],
+});
+// Charts don't draw while their tab is hidden; catch up when it's shown.
+document.querySelector('.tab[data-tab="tune"]').addEventListener("click", () => requestAnimationFrame(() => charts.changed()));
+
+// ---------------------------------------------------------------------
+// Joystick (Control tab)
+// ---------------------------------------------------------------------
+// The firmware zeros drive input if it doesn't hear from us for 300 ms, so
 // besides sending on every move, a keep-alive interval re-sends the current
 // position while held still (pointermove only fires on actual movement).
-const joystickPad = document.getElementById("joystickPad");
-const joystickNub = document.getElementById("joystickNub");
+const joystickPad = $("joystickPad");
+const joystickNub = $("joystickNub");
 const JOYSTICK_KEEPALIVE_MS = 100;
 let joyX = 0, joyY = 0, joyDragging = false, joyTimer = null;
 
@@ -378,15 +1385,15 @@ function updateNub(x, y) {
   const radius = joystickPad.clientWidth / 2;
   joystickNub.style.left = `calc(50% + ${x * radius}px)`;
   joystickNub.style.top = `calc(50% + ${-y * radius}px)`;
+  setText($("joyReadout"), x || y ? `turn ${x.toFixed(2)} · move ${y.toFixed(2)}` : "");
 }
 
 function sendJoystick() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ cmd: "joystick", x: joyX, y: joyY }));
-  }
+  send({ cmd: "joystick", x: Number(joyX.toFixed(3)), y: Number(joyY.toFixed(3)) });
 }
 
 function joystickDown(e) {
+  if (!isOpen()) return;
   joystickPad.setPointerCapture(e.pointerId);
   joyDragging = true;
   const p = joystickPosFromEvent(e);
@@ -418,26 +1425,26 @@ joystickPad.addEventListener("pointerdown", joystickDown);
 joystickPad.addEventListener("pointermove", joystickMove);
 joystickPad.addEventListener("pointerup", joystickUp);
 joystickPad.addEventListener("pointercancel", joystickUp);
+joystickPad.addEventListener("lostpointercapture", joystickUp);
+// Leaving the page or tab mid-drag must stop the robot.
+window.addEventListener("blur", joystickUp);
+document.addEventListener("visibilitychange", () => { if (document.hidden) joystickUp(); });
 
-// --- Gamepad controller ---
+// ---------------------------------------------------------------------
+// Gamepad controller
+// ---------------------------------------------------------------------
 // Stick axes have no "changed" event, so a connected pad is polled on a
 // timer instead of read via rAF, to avoid flooding the socket every frame.
-// 20ms (50Hz) matches the classic RC PWM/PPM control-frame rate - fast
-// enough to feel instant and not meaningfully faster than motorSendRate
-// can actually consume.
+// 20 ms (50 Hz) matches the classic RC control-frame rate.
 const GAMEPAD_POLL_MS = 20;
 const GAMEPAD_DEADZONE = 0.08;
-const GAMEPAD_ID_KEY = "lqrTuner.gamepadId";
-const gamepadSelect = document.getElementById("gamepadSelect");
-const gamepadRescan = document.getElementById("gamepadRescan");
-const gamepadNote = document.getElementById("gamepadNote");
+const GAMEPAD_ID_KEY = "sbr.gamepadId";
+const gamepadSelect = $("gamepadSelect");
+const gamepadNote = $("gamepadNote");
 let selectedGamepadIndex = -1;
 
-// Captive-portal browsers may have no (or a throwing) localStorage and may
-// lack the Gamepad API, so every access goes through these guards. Without
-// them one exception here would stop the rest of the script running.
-function storageGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
-function storageSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+// Captive-portal browsers may lack the Gamepad API (or throw from it), so
+// every access goes through this guard.
 function getPads() {
   try { return navigator.getGamepads ? (navigator.getGamepads() || []) : []; } catch (e) { return []; }
 }
@@ -480,9 +1487,10 @@ function refreshGamepadList() {
     gamepadSelect.value = String(rememberedIndex);
   }
 
-  gamepadNote.textContent = found
-    ? `${found} controller${found > 1 ? "s" : ""} detected.`
-    : "No controller detected — press a button on it, then hit Rescan.";
+  gamepadNote.textContent = !navigator.getGamepads
+    ? "This browser doesn't support gamepads here (try Chrome or Edge, outside the captive-portal window)."
+    : found ? `${found} controller${found > 1 ? "s" : ""} detected.`
+    : "No controller detected - press a button on it, then hit Rescan.";
 }
 
 gamepadSelect.addEventListener("change", () => {
@@ -493,10 +1501,10 @@ gamepadSelect.addEventListener("change", () => {
   }
   selectedGamepadIndex = idx;
   const gp = getPads()[idx];
-  if (gp) storageSet(GAMEPAD_ID_KEY, gp.id);
+  if (gp) { storageSet(GAMEPAD_ID_KEY, gp.id); log(`Gamepad: ${gp.id}`); }
 });
 
-gamepadRescan.addEventListener("click", refreshGamepadList);
+$("gamepadRescan").addEventListener("click", refreshGamepadList);
 window.addEventListener("gamepadconnected", refreshGamepadList);
 window.addEventListener("gamepaddisconnected", refreshGamepadList);
 
@@ -521,6 +1529,337 @@ function pollGamepadDrive() {
   updateNub(joyX, joyY);
   sendJoystick();
 }
+
+// ---------------------------------------------------------------------
+// WiFi networks
+// ---------------------------------------------------------------------
+// SSIDs are untrusted (anyone nearby can name a network anything), so they
+// only ever go into the page via textContent.
+let wifi = null;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function signalBars(rssi) {
+  const n = rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+  return "▂▄▆█".slice(0, n).padEnd(4, "·");
+}
+
+let lastWifiJson = "";
+function renderWifi(m, force = false) {
+  const json = JSON.stringify(m);
+  if (json === lastWifiJson && !force) return;
+  lastWifiJson = json;
+  wifi = m;
+  const s = m.status;
+  const open = isOpen();
+
+  // AP-only switch
+  if (document.activeElement !== $("apOnly")) $("apOnly").checked = !!s.apOnly;
+  $("savedSection").classList.toggle("dimmed", !!s.apOnly);
+  $("wifiConnectBtn").disabled = !open || !!s.apOnly;
+
+  // Status
+  const parts = [];
+  if (s.apOnly) parts.push("Access point only - not joining any network");
+  else if (s.connected) parts.push(`Connected to "${s.ssid}" (${s.rssi} dBm) · ${s.ip} · http://${s.hostname}.local/`);
+  else if (s.connecting) parts.push(`Connecting to "${s.ssid}"...`);
+  else parts.push(m.saved.length ? "Not connected to a saved network" : "No saved networks");
+  if (s.apActive) {
+    parts.push(`Access point "${s.apSsid}" · ${s.apIp} · ${s.apClients} client${s.apClients === 1 ? "" : "s"}`);
+  } else {
+    parts.push(`Fallback access point: "${s.apSsid}"`);
+  }
+  const status = $("wifiStatus");
+  status.textContent = "";
+  parts.forEach((p, i) => { if (i) status.appendChild(document.createElement("br")); status.appendChild(document.createTextNode(p)); });
+  $("netInfo").textContent = s.connected ? `· WiFi "${s.ssid}" · ${s.ip}` : (s.apActive ? `· AP · ${s.apIp}` : "");
+
+  // Saved
+  $("wifiCount").textContent = `(${m.saved.length}/${m.max})`;
+  const saved = $("wifiSaved");
+  saved.textContent = "";
+  if (!m.saved.length) saved.appendChild(el("li", "empty", "None yet - add one below."));
+  for (const ssid of m.saved) {
+    const li = el("li");
+    li.appendChild(el("span", "name", ssid));
+    const current = s.connected && s.ssid === ssid;
+    if (current) li.appendChild(el("span", "tag ok", "connected"));
+    else if (s.connecting && s.ssid === ssid) li.appendChild(el("span", "tag", "connecting"));
+    const del = el("button", "small", "Remove");
+    del.disabled = !open;
+    del.onclick = async () => {
+      const msg = current
+        ? `Remove "${ssid}"? The robot stays connected until it next restarts or loses the network.`
+        : `Remove "${ssid}"?`;
+      if (await ask(msg, "Remove", true)) send({ cmd: "wifiRemove", ssid });
+    };
+    li.appendChild(del);
+    saved.appendChild(li);
+  }
+
+  // Scan results
+  $("wifiScanState").textContent = m.scanning ? "(scanning...)" : "";
+  $("wifiScanBtn").disabled = m.scanning || !open;
+  const near = $("wifiNearby");
+  near.textContent = "";
+  if (!m.networks.length) near.appendChild(el("li", "empty", m.scanning ? "Scanning..." : "Press Scan to list networks in range."));
+  for (const n of m.networks) {
+    const li = el("li", "pick");
+    li.title = "Click to fill in the SSID";
+    li.appendChild(el("span", "bars", signalBars(n.rssi)));
+    li.appendChild(el("span", "name", n.ssid));
+    if (!n.open) li.appendChild(el("span", "muted", "🔒"));
+    if (n.saved) li.appendChild(el("span", "tag ok", "saved"));
+    li.onclick = () => { $("wifiSsid").value = n.ssid; $("wifiPass").value = ""; $("wifiPass").focus(); };
+    near.appendChild(li);
+  }
+}
+
+$("apOnly").onchange = async (e) => {
+  const on = e.target.checked;
+  // Turning it off from a page open on the access point: if the robot joins
+  // a network the AP may change channel (a brief drop) and later switch off
+  // once it has had no clients for 10 s.
+  if (!on && wifi && wifi.status.apActive && location.hostname === wifi.status.apIp) {
+    const msg = wifi.saved.length
+      ? `The robot will try its saved networks. If it joins one, this page may disconnect briefly, and the ` +
+        `access point switches off once nobody is using it; then open http://${wifi.status.hostname}.local/ on that network.`
+      : "There are no saved networks yet, so the robot will keep its access point until you add one.";
+    if (!(await ask(msg, "Turn off"))) { e.target.checked = true; return; }
+  }
+  send({ cmd: "apOnly", on });
+  log(`Access point only: ${on ? "on" : "off"}`);
+};
+
+$("wifiShowPass").onchange = (e) => { $("wifiPass").type = e.target.checked ? "text" : "password"; };
+
+$("wifiAddForm").onsubmit = (e) => {
+  e.preventDefault();
+  const ssid = $("wifiSsid").value.trim();
+  const password = $("wifiPass").value;
+  if (!ssid) return;
+  if (password && password.length < 8) { toast("WPA passwords are at least 8 characters", false); return; }
+  if (wifi && wifi.saved.length >= wifi.max && !wifi.saved.includes(ssid)) {
+    toast(`Already ${wifi.max} saved networks - remove one first`, false);
+    return;
+  }
+  send({ cmd: "wifiAdd", ssid, password });
+  log(`Saved network "${ssid}"`);
+  $("wifiSsid").value = "";
+  $("wifiPass").value = "";
+  if (wifi && !wifi.status.connected && !wifi.status.apOnly) toast(`Saved "${ssid}" - press Connect now to join it`);
+};
+
+$("wifiScanBtn").onclick = () => send({ cmd: "wifiScan" });
+
+$("wifiConnectBtn").onclick = async () => {
+  if (!wifi || !wifi.saved.length) { toast("Add a network first", false); return; }
+  if (wifi.status.apActive && location.hostname === wifi.status.apIp &&
+      !(await ask("The robot will try its saved networks. This page may disconnect briefly; " +
+               `if it joins, you can also open it at http://${wifi.status.hostname}.local/ on that network.`, "Connect"))) return;
+  send({ cmd: "wifiConnect" });
+  log("Connecting to saved networks");
+};
+
+// ---------------------------------------------------------------------
+// Recording
+// ---------------------------------------------------------------------
+let capState = "idle";
+$("capBtn").onclick = () => {
+  if (capState === "armed" || capState === "recording") {
+    send({ cmd: "captureCancel" });
+    log("Recording cancelled");
+  } else {
+    send({ cmd: "capture", seconds: Number($("capSecs").value), trigger: $("capTrigger").value });
+    log(`Recording ${$("capSecs").value} s (${$("capTrigger").selectedOptions[0].text.toLowerCase()})`);
+  }
+};
+
+function showCapture(c) {
+  if (!c) return;
+  const prev = capState;
+  capState = c.state;
+  const busy = c.state === "armed" || c.state === "recording";
+  setText($("capBtn"), busy ? "Cancel" : "Record");
+  setClass($("capBtn"), busy ? "danger" : "primary");
+  setClass($("capDownload"), "button" + (c.state === "done" && c.n ? "" : " disabled"));
+  const secs = (n) => (n / (c.hz || 500)).toFixed(1);
+  setText($("capStatus"),
+    c.state === "armed" ? "Armed - waiting for it to start balancing..." :
+    c.state === "recording" ? `Recording... ${secs(c.n)} / ${secs(c.max)} s` :
+    c.state === "done" ? `Recorded ${secs(c.n)} s (${c.n} samples) - ready to download.` :
+    "No recording yet.");
+  if (prev === "recording" && c.state === "done") { toast("Recording finished"); log("Recording finished"); }
+}
+
+// ---------------------------------------------------------------------
+// "Open in browser" helper
+// ---------------------------------------------------------------------
+const pageUrl = `${location.protocol}//${location.host}/`;
+$("openBrowser").href = pageUrl;
+$("openBrowser2").href = pageUrl;
+$("pageAddr").textContent = pageUrl;
+$("copyAddr").onclick = () => {
+  // navigator.clipboard needs https, so fall back to a hidden text field.
+  const done = () => toast("Address copied - paste it into Safari / Chrome");
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(pageUrl).then(done, () => toast(pageUrl));
+    return;
+  }
+  const t = document.createElement("textarea");
+  t.value = pageUrl;
+  t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.appendChild(t);
+  t.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) {}
+  t.remove();
+  ok ? done() : toast(pageUrl);
+};
+
+// ---------------------------------------------------------------------
+// Message handlers
+// ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Drivers tab
+// ---------------------------------------------------------------------
+let driversMsg = null;
+
+function renderDrivers(m) {
+  driversMsg = m;
+  const busy = !!m.job;
+  setText($("drvJob"), m.job ? "Working: " + m.job : m.balancing ? "Balancing - pause it or lay it down to change driver settings." : "\u00a0");
+  const heard = new Set(m.heard || []);
+  m.d.forEach((d, i) => {
+    const nodeName = (v) => v ? `${v}` : "not set";
+    const rows = [["CAN node", `${d.node} (commands 0x${(0x20 + d.node).toString(16).padStart(3, "0")}, ` +
+                               `telemetry 0x${(0x100 + d.node).toString(16)})`], ["State", d.link]];
+    if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)` +
+                                        (d.proto < 3 ? " - update to 1.2: it won't receive motor currents from this controller" : "")]);
+    else if (d.old) rows.push(["Firmware", "1.0 or older: settings over CAN need 1.1 (update over USB)"]);
+    else rows.push(["Firmware", "-"]);
+    const a = d.active, p = d.pending;
+    if (a) {
+      const pendNote = (now, next) => (p && next !== now) ? ` \u2192 ${next} after save` : "";
+      if (p && p.node !== a.node) rows.push(["Node ID", `${nodeName(a.node)} \u2192 ${nodeName(p.node)} after save`]);
+      rows.push(["Direction", (a.invert ? "inverted" : "normal") + pendNote(a.invert ? "inverted" : "normal", p && (p.invert ? "inverted" : "normal"))]);
+      const calNow = a.cal ? `stored (${a.ccw ? "CCW" : "CW"}, ${a.zero.toFixed(3)} rad)` : "none: aligns at every start";
+      rows.push(["Alignment", calNow + (p && p.cal !== a.cal ? (p.cal ? " \u2192 new one after save" : " \u2192 cleared after save") : "")
+        + (a.cal ? (d.calUsed ? ", used at the last start" : ", not used at the last start") : "")]);
+    }
+    const t = $("drvInfo" + i);
+    t.innerHTML = "";
+    for (const [k, v] of rows) {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td"), td2 = document.createElement("td");
+      td1.textContent = k; td2.textContent = v;
+      tr.append(td1, td2);
+      t.appendChild(tr);
+    }
+    const can = d.known && d.proto >= 2 && d.link !== "OFFLINE" && !busy && !m.balancing;
+    const acts = $("drvActions" + i);
+    acts.innerHTML = "";
+    const btn = (label, op, opts = {}) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (opts.cls) b.className = opts.cls;
+      b.disabled = !can || opts.disabled;
+      b.onclick = async () => {
+        if (opts.ask && !(await ask(opts.ask, opts.okLabel || label, !!opts.danger))) return;
+        send({ cmd: "driver", side: i, op, value: opts.value });
+      };
+      acts.appendChild(b);
+    };
+    if (a) {
+      const inv = p ? p.invert : a.invert;
+      btn(inv ? "Normal direction" : "Invert direction", "invert", { value: inv ? 0 : 1,
+        ask: "Flipping this wheel's direction makes the balance controller push it the wrong way unless the motor " +
+             "is mounted or wired differently from the other one. It takes effect after Save & reboot. Change it?" });
+      btn("Save & reboot", "save", { cls: d.unsaved ? "primary" : "", disabled: !d.unsaved });
+      btn("Revert", "revert", { disabled: !d.unsaved });
+      btn("Re-run alignment", "recal", { ask: "The " + (i ? "right" : "left") + " driver reboots twice and its wheel " +
+        "turns a little while it aligns (about 15 s). Lay the robot on its side or lift that wheel first.", okLabel: "Align" });
+      btn("Reboot", "reboot");
+      // Change the node ID saved on this board.
+      if (d.proto >= 3) {
+        const sel = document.createElement("select");
+        sel.className = "inline";
+        sel.setAttribute("aria-label", "New node ID");
+        for (let n = 1; n <= 15; n++) {
+          if (n === d.node || n === m.d[1 - i].node || heard.has(n)) continue;
+          const o = document.createElement("option");
+          o.value = n; o.textContent = `node ${n}`;
+          sel.appendChild(o);
+        }
+        sel.disabled = !can;
+        acts.appendChild(sel);
+        btn("Change node ID", "setNode", { get value() { return +sel.value; },
+          ask: "Change the node ID saved on the " + (i ? "right" : "left") + " driver board? It reboots with new CAN " +
+               "IDs and this robot uses the new ID for that wheel.", okLabel: "Change" });
+      }
+    }
+    setText($("drvResult" + i), d.result || "");
+  });
+  // Wheel -> node dropdowns (don't rebuild while one is open).
+  for (const [id, i] of [["drvNodeL", 0], ["drvNodeR", 1]]) {
+    const sel = $(id);
+    if (document.activeElement === sel) continue;
+    sel.innerHTML = "";
+    for (let n = 1; n <= 15; n++) {
+      const o = document.createElement("option");
+      o.value = n;
+      o.textContent = n + (heard.has(n) ? " (heard)" : "");
+      sel.appendChild(o);
+    }
+    sel.value = m.d[i].node;
+    sel.disabled = busy || m.balancing;
+  }
+  $("drvLegacy").hidden = !heard.has(0);
+  $("drvSwap").disabled = busy || m.balancing;
+}
+
+function sendDriverNodes() {
+  send({ cmd: "driver", op: "nodes", left: +$("drvNodeL").value, right: +$("drvNodeR").value });
+}
+$("drvNodeL").onchange = sendDriverNodes;
+$("drvNodeR").onchange = sendDriverNodes;
+
+document.querySelectorAll("[data-drv]").forEach((b) => {
+  b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
+});
+$("drvSwap").onclick = () => send({ cmd: "driver", op: "swap" });
+
+const handlers = {
+  info(m) {
+    robotName = m.name;
+    setText($("robotName"), m.name);
+    document.title = `${m.name} - Self-balancing Robot`;
+    setText($("iName"), m.name);
+    setText($("iPass"), m.apPassword);
+    setText($("iHost"), `http://${m.hostname}.local/`);
+    setText($("iSuffix"), m.suffix);
+    $("buildInfo").textContent = `Built ${m.build}.` + (m.psram ? "" : " No PSRAM found: recordings are limited to a few seconds.");
+  },
+  log(m) { deviceLog(m.boot, m.lines); },
+  wifi: (m) => renderWifi(m),
+  drivers: (m) => renderDrivers(m),
+  schema(m) { buildSettings(m.params); },
+  settings(m) {
+    applySettings(m.values);
+    dirty = m.dirty;
+    updateSaveButton();
+  },
+  telemetry: showTelemetry,
+  notice(m) {
+    toast(m.text, m.ok);
+    log(m.text);
+  },
+};
 
 connect(); // first, so nothing below can prevent the socket coming up
 refreshGamepadList();

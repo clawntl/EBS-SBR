@@ -18,20 +18,26 @@ static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_1 = 6;
 static const uint32_t CAN_ARBITRATION_PHASE_SEGMENT_2 = 1;
 static const uint32_t CAN_ARBITRATION_SJW = 1;
 
-// Acceptance filter: accepts 0x100, 0x101, 0x102, 0x103
+// Acceptance filter: driver telemetry 0x100-0x10F (0x100 itself is where a
+// firmware 1.0/1.1 "right" board still reports, so it can be spotted).
 static const uint32_t CAN_RX_FILTER_ID = 0x100;
-static const uint32_t CAN_RX_FILTER_MASK = 0x7FC;
+static const uint32_t CAN_RX_FILTER_MASK = 0x7F0;
 
 // ----------------------------------------------
-// Node addresses
+// Node IDs (driver CAN protocol 3, firmware 1.2+)
 // ----------------------------------------------
-#define BOTH_MOTOR_CAN_ADDR     0x020
-#define LEFT_MOTOR_CAN_ADDR     0x021
-#define RIGHT_MOTOR_CAN_ADDR    0x022
-
-// Shaft velocity broadcast IDs (sent by the motor controllers)
-#define RIGHT_MOTOR_VELOCITY_CAN_ID   0x100
-#define LEFT_MOTOR_VELOCITY_CAN_ID    0x101
+// Each driver board has a node ID n = 1..15 (see BLDC-Driver
+// docs/can-protocol.md). Which nodes are this robot's left and right wheels
+// is set by the leftNode / rightNode settings (defaults 1 and 2).
+//   current frame  0x010 + (n-1)/2, 8 bytes = two floats: odd n bytes 0-3,
+//                  even n bytes 4-7; NaN = no command for that node
+//   commands       0x020 + n
+//   telemetry      0x100 + n
+#define CURRENT_FRAME_BASE  0x010
+#define COMMAND_ID_BASE     0x020
+#define TELEMETRY_ID_BASE   0x100
+#define NODE_ID_MIN         1
+#define NODE_ID_MAX         15
 
 // ----------------------------------------------
 // Standard message command byte
@@ -42,15 +48,52 @@ enum CAN_CMD : uint8_t {
     CMD_SHAFT_VELOCITY = 0x02,
 
     // Driver -> host heartbeat, every 100 ms (not sent while a driver is
-    // blocked in its FOC start): [0x03][DriverState][DRIVER_FLAG_* bits][0][0]
+    // blocked in its FOC start):
+    // [0x03][DriverState][DRIVER_FLAG_* bits][supply mV, uint16 big-endian]
+    // Supply mV = 0 means none (older driver firmware sends 0 there).
     CMD_DRIVER_STATUS = 0x03,
 
     // Host -> driver: [0x10]. Driver -> host reply once the start has
     // finished: [0x10][float 1.0 = ok, 0.0 = failed]
     CMD_START_FOC = 0x10,
 
+    // ---- Configuration (driver CAN protocol 2, firmware 1.1+) -------------
+    // Host -> driver on its command ID; the reply comes back on its telemetry
+    // ID with the same command byte. See BLDC-Driver docs/can-protocol.md.
+    CMD_GET_INFO    = 0x20, // -> [0x20][protocol][major][minor][patch][image KB][0][0]
+    CMD_GET_CONFIG  = 0x21, // [0x21][0 active / 1 pending] -> [0x21][which][side][CFG_FLAG_*][zero angle f32]
+    CMD_SET_PARAM   = 0x22, // [0x22][param][f32] -> [0x22][param][status][f32 now]
+    CMD_CALIBRATION = 0x23, // [0x23][CAL_*] -> [0x23][op][status]
+    CMD_SAVE        = 0x24, // -> [0x24][status], then save + reboot
+    CMD_REVERT      = 0x25, // -> [0x25][status]
+    CMD_REBOOT      = 0x26, // -> [0x26][status], then reboot
+    CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
+
     // Driver -> host: [0xFF][float error code (DriverError)]
     CMD_ERROR = 0xFF,
+};
+
+enum DriverParam : uint8_t {
+    PARAM_NODE_ID = 1,   // saved: 1-15 (protocol 2: 1 = left, 2 = right)
+    PARAM_INVERT = 2,    // saved: 0 / 1
+    PARAM_VELOCITY_INTERVAL_MS = 0x10, // runtime: velocity telemetry period, 1-100 ms
+};
+
+enum DriverCalOp : uint8_t { CAL_STORE = 1, CAL_CLEAR = 2 };
+
+enum DriverConfigStatus : uint8_t {
+    CONFIG_OK              = 0,
+    CONFIG_ERR_UNKNOWN     = 1,
+    CONFIG_ERR_BAD_VALUE   = 2,
+    CONFIG_ERR_NOT_ALIGNED = 3,
+    CONFIG_ERR_FLASH       = 4,
+};
+
+enum DriverConfigFlag : uint8_t {
+    CFG_FLAG_INVERT         = 1 << 0,
+    CFG_FLAG_CALIBRATION    = 1 << 1,
+    CFG_FLAG_SENSOR_DIR_CCW = 1 << 2,
+    CFG_FLAG_UNSAVED        = 1 << 3,
 };
 
 enum DriverState : uint8_t {
