@@ -19,7 +19,7 @@ namespace {
 // the rest are the values that were hard-coded in RobotParams.cpp.
 const ParamDef kParams[] = {
     // ---- Balance gains (LQR) -------------------------------------------------
-    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -10.0f, -30.0f, 30.0f, 0.01f, false,
+    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -25.0f, -30.0f, 30.0f, 0.01f, false,
      "How hard the wheels push back when the robot leans away from the angle set point: the main "
      "'stiffness'. More negative pushes harder; too much makes it oscillate quickly or buzz, too "
      "little and it can't catch itself.",
@@ -114,15 +114,15 @@ const ParamDef kParams[] = {
      [](float v) { maxHeadingError = v * DEG_TO_RAD; }, 0},
 
     // ---- Driving ------------------------------------------------------------------
-    {"maxSpeed", "Top speed (wheel rad/s)", "Driving", 10.0f, 0.0f, 40.0f, 0.5f, false,
+    {"maxSpeed", "Top speed (wheel rad/s)", "Driving", 40.0f, 0.0f, 40.0f, 0.5f, false,
      "Wheel speed requested at full forward/back on the joystick or gamepad. The controller leans "
      "the robot to reach it, so too much can tip it past the cut-out angle.",
      [](float v) { maxWheelSpeed = v; }, 0},
-    {"maxAccel", "Acceleration (wheel rad/s²)", "Driving", 20.0f, 1.0f, 200.0f, 1.0f, false,
+    {"maxAccel", "Acceleration (wheel rad/s²)", "Driving", 35.0f, 1.0f, 200.0f, 1.0f, false,
      "How quickly the requested speed may change. Lower is gentler starts and stops; very high "
      "makes it lurch (it has to roll backwards briefly to lean into a start).",
      [](float v) { maxWheelAccel = v; }, 0},
-    {"maxTurn", "Turn rate (deg/s)", "Driving", 90.0f, 0.0f, 360.0f, 5.0f, false,
+    {"maxTurn", "Turn rate (deg/s)", "Driving", 120.0f, 0.0f, 360.0f, 5.0f, false,
      "Turn rate requested at full left/right.",
      [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},
     {"turnGain", "Turn feed-forward (A)", "Driving", 0.1f, 0.0f, 1.0f, 0.01f, false,
