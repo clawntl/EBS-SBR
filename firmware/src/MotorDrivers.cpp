@@ -570,8 +570,6 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
                 c.protocol = d[1];
                 c.fwMajor = d[2]; c.fwMinor = d[3]; c.fwPatch = d[4];
                 c.imageKB = d[5];
-                c.boardId = len >= 8 ? d[6] : 0;
-                c.hwRev   = len >= 8 ? d[7] : 0;
             }
             break;
         case CMD_GET_BOARD_INFO:

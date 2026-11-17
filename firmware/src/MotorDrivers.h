@@ -45,7 +45,6 @@ struct DriverConfigView {
     uint8_t protocol;
     uint8_t fwMajor, fwMinor, fwPatch;
     uint8_t imageKB;
-    uint8_t boardId, hwRev;  // CMD_GET_INFO bytes 6-7 (0 = firmware before 1.3)
     bool    modelKnown;      // CMD_GET_BOARD_INFO model name read (protocol 4+)
     char    model[31];       // e.g. "BLDC-Driver v0.2"
     bool    activeKnown;    // settings in use

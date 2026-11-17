@@ -60,8 +60,7 @@ enum CAN_CMD : uint8_t {
     // ---- Configuration (driver CAN protocol 2, firmware 1.1+) -------------
     // Host -> driver on its command ID; the reply comes back on its telemetry
     // ID with the same command byte. See BLDC-Driver docs/can-protocol.md.
-    CMD_GET_INFO    = 0x20, // -> [0x20][protocol][major][minor][patch][image KB][board ID][hw rev]
-                            //    (board ID / hw rev: firmware 1.3+, older firmware sends 0, 0)
+    CMD_GET_INFO    = 0x20, // -> [0x20][protocol][major][minor][patch][image KB][0][0]
     CMD_GET_CONFIG  = 0x21, // [0x21][0 active / 1 pending] -> [0x21][which][side][CFG_FLAG_*][zero angle f32]
     CMD_SET_PARAM   = 0x22, // [0x22][param][f32] -> [0x22][param][status][f32 now]
     CMD_CALIBRATION = 0x23, // [0x23][CAL_*] -> [0x23][op][status]
@@ -69,7 +68,7 @@ enum CAN_CMD : uint8_t {
     CMD_REVERT      = 0x25, // -> [0x25][status]
     CMD_REBOOT      = 0x26, // -> [0x26][status], then reboot
     // Board description (protocol 4, firmware 1.3+):
-    // [0x27][page] -> page 0:   [0x27][0][capabilities u32][board ID][hw rev]
+    // [0x27][page] -> page 0:   [0x27][0][capabilities u32][hw rev][0]
     //                 page 1-5: [0x27][page][6 chars of the model name, NUL-padded]
     // The model name (e.g. "BLDC-Driver v0.2") is up to 30 characters.
     CMD_GET_BOARD_INFO = 0x27,
