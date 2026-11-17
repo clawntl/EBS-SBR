@@ -189,6 +189,8 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
             o["proto"] = c.protocol;
             o["fw"] = String(c.fwMajor) + "." + c.fwMinor + "." + c.fwPatch;
             o["kb"] = c.imageKB;
+            if (c.modelKnown && c.model[0]) o["model"] = c.model;
+            else if (c.boardId) o["model"] = String("board ID ") + c.boardId + " rev " + c.hwRev;
         }
         if (c.activeKnown) {
             JsonObject a = o["active"].to<JsonObject>();

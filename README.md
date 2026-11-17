@@ -40,29 +40,29 @@ A compact two-wheeled **self-balancing robot** with custom electronics: an ESP32
 
 The motor drivers are the [**BLDC-Driver**](https://github.com/clawntl/BLDC-Driver) board, a compact 39 mm × 36 mm FOC driver. Its KiCad hardware, firmware and full documentation live in that repo.
 
-> **Note:** this controller firmware needs the current BLDC-Driver firmware, which sends the `CMD_DRIVER_STATUS` heartbeat. Drivers running older firmware are never started.
+> **Note:** this controller firmware needs BLDC-Driver firmware 1.2 or later (CAN node IDs, `CMD_DRIVER_STATUS` heartbeat). Drivers running older firmware are never started. With firmware 1.3 or later, the web page also shows each driver's board model (e.g. "BLDC-Driver v0.2"), read with `CMD_GET_BOARD_INFO`.
 
 - **MCU:** STM32G431CBU6 with hardware CORDIC acceleration
 - **Power stage:** TI DRV8316 with integrated FETs (6-PWM), low-side current sensing on all three phases
 - **Encoder:** AS5048A magnetic sensor over SPI
 - **Control:** [SimpleFOC](https://simplefoc.com/) current (torque) control, 11 pole-pair motors on a 12 V supply
 - **Comms:** FDCAN (classic CAN 2.0B, 1 Mbit/s), receiving target currents, sending shaft velocity every 10 ms and a status heartbeat every 100 ms
-- **Setup:** one firmware build for both sides. The side (left/right) and direction invert are set over serial and saved to flash.
-- **Flashing:** USB DFU (hold the DFU button, or trigger it over serial)
+- **Setup:** one firmware build for both sides. Each board's CAN node ID (node 1 = left, node 2 = right by default) and direction invert are set over USB serial or CAN and saved to flash.
+- **Flashing:** USB DFU (hold BOOT and press RST, press the USER button, or type `dfu` in the serial console)
 
-See the BLDC-Driver [hardware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/hardware.md), [firmware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/firmware.md) and [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for details.
+See the BLDC-Driver [board page](https://github.com/clawntl/BLDC-Driver/blob/main/docs/boards/bldc_driver_v02.md), [firmware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/firmware.md) and [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for details.
 
 ## CAN protocol
 
-| ID      | Direction             | Purpose                         |
-|---------|-----------------------|---------------------------------|
-| `0x020` | Controller → both     | Broadcast to both motor drivers |
-| `0x021` | Controller → left     | Left motor driver               |
-| `0x022` | Controller → right    | Right motor driver              |
-| `0x100` | Right driver → ctrl   | Right driver velocity, status (incl. supply voltage), replies and errors |
-| `0x101` | Left driver → ctrl    | Left driver velocity, status (incl. supply voltage), replies and errors  |
+Each driver has a CAN node ID *n* (1–15). This robot uses node 1 for the left wheel and node 2 for the right; the `leftNode` / `rightNode` settings change that.
 
-Command bytes: `0x02` shaft velocity, `0x03` driver status heartbeat, `0x10` start FOC (and the driver's reply), `0xFF` error. See the BLDC-Driver [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for the frame layouts.
+| ID | Direction | Purpose |
+|---|---|---|
+| `0x010 + (n-1)/2` | Controller → drivers | Target currents: two floats, odd nodes bytes 0–3, even nodes bytes 4–7. Nodes 1 and 2 share `0x010` |
+| `0x020 + n` | Controller → driver *n* | Start FOC and configuration commands (`0x021` left, `0x022` right) |
+| `0x100 + n` | Driver *n* → controller | Velocity, status heartbeat (incl. supply voltage), replies and errors (`0x101` left, `0x102` right) |
+
+Command bytes: `0x02` shaft velocity, `0x03` driver status heartbeat, `0x10` start FOC (and the driver's reply), `0x20`–`0x27` configuration and board information, `0xFF` error. See the BLDC-Driver [CAN protocol](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-protocol.md) for the frame layouts.
 
 ## Building and flashing
 
@@ -83,18 +83,20 @@ pio run -e ota -t upload --upload-port balancebot-xxxxxx.local
 
 The firmware uses the `min_spiffs.csv` partition table (two ~1.9 MB app slots for OTA). Moving to it from the old `default.csv` layout needs one USB flash; saved settings (NVS) survive the change.
 
-**Driver boards:** build and flash from the BLDC-Driver repo. All boards use the same build. Each board is then set to left or right over its USB serial console:
+**Driver boards:** build and flash from the BLDC-Driver repo. All boards use the same build. Each board is then given its node ID over its USB serial console:
 
 ```bash
 cd Firmware          # in the BLDC-Driver repo
-pio run -e driver -t upload
+pio run -e bldc_driver_v02 -t upload
 ```
 
 ```text
-set side left        # or right
+set node 1           # 1 = left, 2 = right (or: set side left / right)
 set invert on|off    # optional
 save
 ```
+
+Settings survive reflashing, so a board that is already set up keeps its node ID. They can also be changed from this controller's web page or with BLDC-Driver's [CAN test tools](https://github.com/clawntl/BLDC-Driver/blob/main/docs/can-tools.md).
 
 See the BLDC-Driver [firmware guide](https://github.com/clawntl/BLDC-Driver/blob/main/docs/firmware.md) for details.
 
