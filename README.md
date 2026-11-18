@@ -142,7 +142,7 @@ The controller board accepts commands at 115200 baud, one per line:
 |--------------|--------------------------------------------------|
 | `SP <deg>`   | Balance angle set point (degrees from upright)   |
 | `DA <deg>`   | Tilt angle at which the motors are deactivated   |
-| `K0`-`K5 <value>` | LQR gains (only K1, K3 and K4 are used at the moment) |
+| `K0`-`K5 <value>` | LQR gains: K0 wheel position, K1 tilt, K2 heading, K3 wheel speed, K4 tilt rate, K5 yaw rate |
 | `CA <value>` | Complementary filter coefficient                 |
 | `SET <key> <value>` | Any setting by its key                    |
 | `LIST`       | All settings with their current values           |
