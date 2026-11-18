@@ -1739,6 +1739,7 @@ function renderDrivers(m) {
     const nodeName = (v) => v ? `${v}` : "not set";
     const rows = [["CAN node", `${d.node} (commands 0x${(0x20 + d.node).toString(16).padStart(3, "0")}, ` +
                                `telemetry 0x${(0x100 + d.node).toString(16)})`], ["State", d.link]];
+    if (d.known) rows.push(["Board", d.model || "not reported (firmware before 1.3)"]);
     if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)` +
                                         (d.proto < 3 ? " - update to 1.2: it won't receive motor currents from this controller" : "")]);
     else if (d.old) rows.push(["Firmware", "1.0 or older: settings over CAN need 1.1 (update over USB)"]);

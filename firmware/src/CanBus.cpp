@@ -146,6 +146,7 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
         case CMD_SAVE:
         case CMD_REVERT:
         case CMD_REBOOT:
+        case CMD_GET_BOARD_INFO:
         case CMD_NACK:
             handleDriverConfigReply(side, rxMsg.data, rxMsg.len);
             break;

@@ -67,6 +67,11 @@ enum CAN_CMD : uint8_t {
     CMD_SAVE        = 0x24, // -> [0x24][status], then save + reboot
     CMD_REVERT      = 0x25, // -> [0x25][status]
     CMD_REBOOT      = 0x26, // -> [0x26][status], then reboot
+    // Board description (protocol 4, firmware 1.3+):
+    // [0x27][page] -> page 0:   [0x27][0][capabilities u32][hw rev][0]
+    //                 page 1-5: [0x27][page][6 chars of the model name, NUL-padded]
+    // The model name (e.g. "BLDC-Driver v0.2") is up to 30 characters.
+    CMD_GET_BOARD_INFO = 0x27,
     CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
 
     // Driver -> host: [0xFF][float error code (DriverError)]

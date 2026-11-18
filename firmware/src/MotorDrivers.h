@@ -45,6 +45,8 @@ struct DriverConfigView {
     uint8_t protocol;
     uint8_t fwMajor, fwMinor, fwPatch;
     uint8_t imageKB;
+    bool    modelKnown;      // CMD_GET_BOARD_INFO model name read (protocol 4+)
+    char    model[31];       // e.g. "BLDC-Driver v0.2"
     bool    activeKnown;    // settings in use
     uint8_t node;           // node ID (protocol 2 firmware: 1 = left, 2 = right)
     uint8_t flags;          // CFG_FLAG_*
@@ -56,7 +58,7 @@ struct DriverConfigView {
 };
 
 enum class DriverOp : uint8_t {
-    Refresh,      // re-read firmware version and settings
+    Refresh,      // re-read firmware version, board model and settings
     SetInvert,    // value 0/1, pending until Save
     CalStore,     // keep this boot's alignment, pending until Save
     CalClear,     // forget the stored alignment, pending until Save

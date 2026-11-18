@@ -220,7 +220,7 @@ bool needsRefresh[2] = { false, false };
 uint8_t sentInterval[2] = { 0, 0 };
 
 enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode };
-enum class Step : uint8_t { Send, WaitReply, WaitInfo,
+enum class Step : uint8_t { Send, WaitReply, WaitInfo, WaitBoard,
                             RecalWaitClear, RecalWaitSave1, RecalWaitAligned, RecalWaitStore,
                             RecalWaitSave2, RecalWaitRunning,
                             NodeWaitSet, NodeWaitSave };
@@ -288,6 +288,12 @@ void sendQueries(MotorSide side) {
     send(side, { CMD_GET_CONFIG, 1 });
 }
 
+// Model name pages 1-5 (protocol 4+). The replies carry their page number, so
+// they can all be sent at once; the driver answers them in order.
+void sendBoardInfoQueries(MotorSide side) {
+    for (uint8_t page = 1; page <= 5; page++) send(side, { CMD_GET_BOARD_INFO, page });
+}
+
 const char *statusText(uint8_t st) {
     switch (st) {
         case CONFIG_OK:              return "OK";
@@ -343,11 +349,24 @@ void runJob(uint32_t now) {
 
     case Job::Refresh:
         if (job.step == Step::Send) {
+            portENTER_CRITICAL(&cfgLock);
+            cfg[sd].modelKnown = false;
+            cfg[sd].model[0] = 0;
+            portEXIT_CRITICAL(&cfgLock);
             markSent(sd, now);
             sendQueries(sd);
             job.step = Step::WaitInfo;
+        } else if (job.step == Step::WaitBoard) {
+            // Older firmware NACKs CMD_GET_BOARD_INFO; it isn't asked (protocol < 4).
+            if (cfg[sd].modelKnown || inStep > REPLY_TIMEOUT_MS) endJob();
         } else if (cfg[sd].infoKnown && lastReply[sd].seq != job.seqAtSend[sd] && inStep > 100) {
-            endJob();
+            if (cfg[sd].protocol >= 4) {
+                markSent(sd, now);
+                sendBoardInfoQueries(sd);
+                job.step = Step::WaitBoard;
+            } else {
+                endJob();
+            }
         } else if (inStep > REPLY_TIMEOUT_MS) {
             if (!cfg[sd].infoKnown) {
                 portENTER_CRITICAL(&cfgLock);
@@ -551,6 +570,19 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
                 c.protocol = d[1];
                 c.fwMajor = d[2]; c.fwMinor = d[3]; c.fwPatch = d[4];
                 c.imageKB = d[5];
+            }
+            break;
+        case CMD_GET_BOARD_INFO:
+            // Pages 1-5: 6 characters each of the model name, NUL-padded.
+            if (len >= 8 && d[1] >= 1 && d[1] <= 5) {
+                const uint8_t at = (d[1] - 1) * 6;
+                bool end = false;
+                for (uint8_t i = 0; i < 6; i++) {
+                    c.model[at + i] = (char)d[2 + i];
+                    if (d[2 + i] == 0) end = true;
+                }
+                c.model[sizeof(c.model) - 1] = 0;
+                if (end || d[1] == 5) c.modelKnown = true;
             }
             break;
         case CMD_GET_CONFIG:
