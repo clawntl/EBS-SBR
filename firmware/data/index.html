@@ -436,6 +436,23 @@
       </div>
     </div>
     <div class="panel">
+      <h2>Current loop (both drivers)</h2>
+      <div class="actions">
+        <label>P <input id="curP" type="number" class="inline" min="0" max="50" step="0.5" style="width:5em"> V/A</label>
+        <label>I <input id="curI" type="number" class="inline" min="0" max="100000" step="100" style="width:6em"> V/(A&middot;s)</label>
+        <label>Filter <input id="curTf" type="number" class="inline" min="0" max="10" step="0.05" style="width:5em"> ms</label>
+        <button id="curApply">Apply to both</button>
+        <button id="curDefaults">Defaults</button>
+      </div>
+      <p class="muted" id="curNote"></p>
+      <p class="muted">The drivers' current (torque) controller: how quickly the motor current follows what the
+        balance controller asks for. It applies at once; press <b>Save &amp; reboot</b> on each driver to keep it
+        (<b>Revert</b> goes back to the saved values). The defaults (P 3, I 300, filter 0.53 ms) are slow on these
+        5.6 &Omega; gimbal motors: about 30 ms to follow a step. Raising <b>I</b> is the main way to speed it up:
+        roughly (5.6 + P) / I seconds, so I = 1500 gives about 6 ms and 3000 about 3 ms. Too much P can make the motor
+        whine or buzz. Re-run the spin test after a change. Needs driver firmware 1.4.</p>
+    </div>
+    <div class="panel">
       <h2>Wheel spin test (for tuning)</h2>
       <div class="actions">
         <label>Current <input id="spinAmps" type="number" class="inline" value="0.1" min="0.02" max="0.5" step="0.02" style="width:5em"> A</label>
@@ -1796,6 +1813,9 @@ function renderDrivers(m) {
       rows.push(["Alignment", calNow + (p && p.cal !== a.cal ? (p.cal ? " \u2192 new one after save" : " \u2192 cleared after save") : "")
         + (a.cal ? (d.calUsed ? ", used at the last start" : ", not used at the last start") : "")]);
     }
+    if (d.loop) rows.push(["Current loop", `P ${+d.loop.p.toFixed(3)} V/A, I ${+d.loop.i.toFixed(1)} V/(A\u00b7s), ` +
+                                          `filter ${(d.loop.tf * 1000).toFixed(2)} ms` +
+                                          (d.loop.hz > 0 ? ` (FOC loop ${(d.loop.hz / 1000).toFixed(1)} kHz)` : "")]);
     const t = $("drvInfo" + i);
     t.innerHTML = "";
     for (const [k, v] of rows) {
@@ -1865,7 +1885,39 @@ function renderDrivers(m) {
   }
   $("drvLegacy").hidden = !heard.has(0);
   $("drvSwap").disabled = busy || m.balancing;
+  renderCurrentLoop(m, busy);
 }
+
+// Current loop panel: shows the left driver's values until edited.
+let curEdited = false;
+function renderCurrentLoop(m, busy) {
+  const [l, r] = [m.d[0], m.d[1]];
+  const ok = m.d.every((d) => d.known && d.proto >= 5 && d.link !== "OFFLINE");
+  const ids = ["curP", "curI", "curTf"];
+  if (!curEdited && l.loop && !ids.includes(document.activeElement && document.activeElement.id)) {
+    $("curP").value = +l.loop.p.toFixed(3);
+    $("curI").value = +l.loop.i.toFixed(1);
+    $("curTf").value = +(l.loop.tf * 1000).toFixed(3);
+  }
+  for (const id of ids) $(id).disabled = !ok;
+  $("curApply").disabled = !ok || busy || m.balancing;
+  $("curDefaults").disabled = !ok;
+  const same = l.loop && r.loop && l.loop.p === r.loop.p && l.loop.i === r.loop.i && l.loop.tf === r.loop.tf;
+  setText($("curNote"), !ok ? "Both drivers need firmware 1.4 or later (and to be online)."
+    : m.balancing ? "Pause it or lay it down to change the current loop."
+    : (l.loop && r.loop && !same) ? "The two drivers have different values - Apply to both to match them." : "");
+}
+for (const id of ["curP", "curI", "curTf"]) $(id).addEventListener("input", () => { curEdited = true; });
+$("curDefaults").onclick = () => {
+  $("curP").value = 3; $("curI").value = 300; $("curTf").value = 0.53;
+  curEdited = true;
+};
+$("curApply").onclick = () => {
+  const p = Number($("curP").value), i = Number($("curI").value), tfMs = Number($("curTf").value);
+  if (![p, i, tfMs].every(Number.isFinite)) return;
+  curEdited = false;
+  send({ cmd: "driver", op: "currentLoop", p, i, tf: tfMs / 1000 });
+};
 
 function sendDriverNodes() {
   send({ cmd: "driver", op: "nodes", left: +$("drvNodeL").value, right: +$("drvNodeR").value });

@@ -209,6 +209,13 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
             p["cal"] = (c.pendFlags & CFG_FLAG_CALIBRATION) != 0;
             o["unsaved"] = (c.pendFlags & CFG_FLAG_UNSAVED) != 0;
         }
+        if (c.loopKnown) {
+            JsonObject l = o["loop"].to<JsonObject>();
+            l["p"] = c.curP;
+            l["i"] = c.curI;
+            l["tf"] = c.curTf;
+            l["hz"] = c.focHz;
+        }
         o["calUsed"] = (m.flags & DRIVER_FLAG_CALIBRATION_USED) != 0;
         o["result"] = c.result;
     }
@@ -359,6 +366,9 @@ void handleMessage(const uint8_t *data, size_t len) {
             err = requestSwapDriverSides();
         } else if (!strcmp(op, "nodes")) {
             err = requestDriverNodes(doc["left"] | 0, doc["right"] | 0);
+        } else if (!strcmp(op, "currentLoop")) {
+            // Both drivers; tf arrives in seconds.
+            err = requestCurrentLoop(doc["p"] | -1.0f, doc["i"] | -1.0f, doc["tf"] | -1.0f);
         } else if (side == 0 || side == 1) {
             const MotorSide sd = (MotorSide)side;
             const float v = doc["value"] | 0.0f;

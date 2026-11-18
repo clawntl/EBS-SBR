@@ -54,6 +54,9 @@ struct DriverConfigView {
     bool    pendingKnown;   // settings after the next save
     uint8_t pendNode;
     uint8_t pendFlags;
+    bool    loopKnown;      // current loop read (protocol 5+)
+    float   curP, curI, curTf; // in use: V/A, V/(A s), s
+    float   focHz;          // FOC loop rate, 0 = not running / unknown
     char    result[72];     // outcome of the last operation, "" = none
 };
 
@@ -67,6 +70,7 @@ enum class DriverOp : uint8_t {
     Reboot,
     Recalibrate,  // clear + save, let it align on the next start, store + save
     SetNodeId,    // value = new node ID: set + save (driver reboots), then use it
+    CurrentLoop,  // both drivers: current loop P/I/filter, applied at once, unsaved (requestCurrentLoop)
 };
 
 DriverConfigView getDriverConfig(MotorSide side);
@@ -77,6 +81,10 @@ const char *driverJobText();
 
 // Starts an operation. Returns nullptr if started, otherwise why not.
 const char *requestDriverOp(MotorSide side, DriverOp op, float value = 0);
+// Sets the current loop on BOTH drivers (protocol 5, firmware 1.4+): P [V/A],
+// I [V/(A s)], filter time constant [s]. Applied at once; each driver keeps it
+// after its Save & reboot. Returns nullptr if started, otherwise why not.
+const char *requestCurrentLoop(float p, float i, float tf);
 // Swaps which node is left and which is right (this robot's leftNode /
 // rightNode settings; nothing is written to the drivers).
 const char *requestSwapDriverSides();

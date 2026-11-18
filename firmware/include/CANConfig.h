@@ -101,6 +101,9 @@ enum CAN_CMD : uint8_t {
     //                 page 1-5: [0x27][page][6 chars of the model name, NUL-padded]
     // The model name (e.g. "BLDC-Driver v0.2") is up to 30 characters.
     CMD_GET_BOARD_INFO = 0x27,
+    // Read a parameter (protocol 5, firmware 1.4+):
+    // [0x28][param] -> [0x28][param][status][f32 value]
+    CMD_GET_PARAM   = 0x28,
     CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
 
     // Driver -> host: [0xFF][float error code (DriverError)]
@@ -111,6 +114,12 @@ enum DriverParam : uint8_t {
     PARAM_NODE_ID = 1,   // saved: 1-15 (protocol 2: 1 = left, 2 = right)
     PARAM_INVERT = 2,    // saved: 0 / 1
     PARAM_VELOCITY_INTERVAL_MS = 0x10, // runtime: velocity telemetry period, 1-100 ms
+    // Current loop tuning (protocol 5): applied at once AND pending (kept by
+    // CMD_SAVE, undone by CMD_REVERT).
+    PARAM_CURRENT_P  = 0x20, // V/A, 0-50 (driver default 3)
+    PARAM_CURRENT_I  = 0x21, // V/(A s), 0-100000 (default 300)
+    PARAM_CURRENT_TF = 0x22, // s, 0-0.01 (default 0.00053)
+    PARAM_FOC_LOOP_HZ = 0x30, // read only: the driver's FOC loop rate
 };
 
 enum DriverCalOp : uint8_t { CAL_STORE = 1, CAL_CLEAR = 2 };
