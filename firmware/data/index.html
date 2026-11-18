@@ -371,6 +371,7 @@
           <div class="tile"><div class="k">Battery</div><div class="v" id="cBatt">-</div></div>
           <div class="tile"><div class="k">Tilt from set point</div><div class="v" id="cDev">-</div></div>
           <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
+          <div class="tile wide"><div class="k">Driving from</div><div class="v" id="cSrc">-</div></div>
         </div>
         <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
       </div>
@@ -384,7 +385,24 @@
             you let go (or if this page loses its connection).</p>
         </div>
         <div class="panel">
-          <h2>Controller input</h2>
+          <h2>Xbox controller (Bluetooth) <span class="muted" id="gpState"></span></h2>
+          <div class="actions">
+            <button id="gpPairBtn" class="primary">Pair a controller</button>
+            <button id="gpForgetBtn">Forget</button>
+          </div>
+          <p class="muted" id="gpInfo"></p>
+          <p class="muted">Pairs an Xbox Wireless Controller (Series X|S, model 1914, or an Xbox One controller with
+            updated firmware) directly with the robot, so no phone is needed. Press <b>Pair</b>, then hold the small
+            pair button on top of the controller until the Xbox logo flashes fast. Only a controller in pairing mode is
+            accepted, and afterwards the robot only connects to that one: just switch it on. Left stick drives (or the
+            right stick turns: <b>Stick layout</b> on the Tune tab); <b>B</b> pauses, <b>A</b> resumes, <b>Y</b> starts a
+            recording (the length set in Record on the Tune tab) or stops one early. It buzzes: twice lightly when it
+            connects, once short when the robot starts balancing, once long when it falls over or is picked up, and
+            once at the start and twice at the end of a recording. Any stick
+            movement takes over from a CAN module.</p>
+        </div>
+        <div class="panel">
+          <h2>Gamepad on this phone or computer</h2>
           <div class="gp-row">
             <select id="gamepadSelect" aria-label="Controller"><option value="-1">Touch joystick only</option></select>
             <button type="button" id="gamepadRescan" class="small">Rescan</button>
@@ -416,6 +434,18 @@
         <div class="actions" id="drvActions1"></div>
         <p class="muted" id="drvResult1"></p>
       </div>
+    </div>
+    <div class="panel">
+      <h2>Wheel spin test (for tuning)</h2>
+      <div class="actions">
+        <label>Current <input id="spinAmps" type="number" class="inline" value="0.1" min="0.02" max="0.5" step="0.02" style="width:5em"> A</label>
+        <label>Step <input id="spinMs" type="number" class="inline" value="200" min="50" max="2000" step="50" style="width:5em"> ms</label>
+        <button id="spinBtn">Run spin test</button>
+      </div>
+      <p class="muted">Measures how much the wheels accelerate per amp (the motors' torque constant, which the balance
+        model needs). Lay the robot down so both wheels turn freely, then run it: both wheels get the current forwards,
+        nothing, backwards, nothing, one step each, and it's recorded - download the CSV from Record on the Tune tab.
+        Start small: 0.1 A for 200 ms spins a free wheel up to a few tens of rad/s.</p>
     </div>
     <div class="panel">
       <h2>About</h2>
@@ -746,13 +776,13 @@ const GROUP_HELP = {
   "Balance gains (LQR)":
     "The controller measures the tilt, how fast it's tipping and how fast the wheels turn, many times a second, " +
     "and sets the total wheel current to -(K1 × tilt from set point + K4 × tilt rate + K3 × wheel speed error " +
-    "+ K0 × position error), split equally between the wheels and limited to ±1 A per wheel. Tune K1 and K4 " +
+    "+ K0 × position error), split equally between the wheels and limited per wheel (Current limit). Tune K1 and K4 " +
     "first (stiffness and damping), then K3, then K0 (under Position & heading hold).",
   "Position & heading hold":
     "Stops the drift. K0 holds the position (forward/back); K2 and K5 hold the heading using the gyro's yaw " +
     "axis, by driving the wheels differentially. Both hold where the robot started balancing, moved along by " +
     "the joystick. Set 'Yaw direction flip' first (see its help), then K5, then K2. Balancing always gets " +
-    "priority: the turning current only gets what's left of each wheel's ±1 A.",
+    "priority: the turning current only gets what's left of each wheel's current limit.",
   "Balance":
     "Where 'upright' is, when to give up, and how the tilt angle is measured.",
   "Driving":
@@ -933,7 +963,18 @@ function applySettings(values) {
     p.number.value = Number(value).toFixed(p.dp);
   }
   if (values.telemetryMs) telemetryMs = values.telemetryMs;
+  // Recording length (also used by the Xbox controller's Y button).
+  if (values.recSecs) {
+    const sel = $("capSecs"), v = String(Math.round(values.recSecs));
+    if (![...sel.options].some((o) => o.value === v)) {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = v + " s";
+      sel.appendChild(o);
+    }
+    if (document.activeElement !== sel) sel.value = v;
+  }
 }
+$("capSecs").onchange = () => send({ cmd: "recSecs", value: Number($("capSecs").value) });
 
 function updateSaveButton() {
   const btn = $("saveBtn");
@@ -1028,6 +1069,8 @@ function showTelemetry(t) {
   const wheel = t.wheel.toFixed(1) + " rad/s";
   setTile("tWheel", wheel);
   setTile("cWheel", wheel);
+  setTile("cSrc", t.src === "module" ? `CAN module ${t.srcMod}`
+                  : t.src === "web" ? "this page" : t.src === "gamepad" ? "Xbox controller" : "nothing (holding)");
   const rate = Number(params.imuRate ? params.imuRate.range.value : 500);
   setTile("tHz", t.hz + " Hz", t.hz && t.hz < rate * 0.9 ? "warn" : "");
 
@@ -1833,6 +1876,11 @@ $("drvNodeR").onchange = sendDriverNodes;
 document.querySelectorAll("[data-drv]").forEach((b) => {
   b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
 });
+$("spinBtn").onclick = () => send({ cmd: "spinTest", amps: Number($("spinAmps").value), ms: Number($("spinMs").value) });
+$("gpPairBtn").onclick = () => send({ cmd: "gpPair" });
+$("gpForgetBtn").onclick = async () => {
+  if (await ask("Forget the paired controller? You'll need to pair it again to use it.", "Forget", true)) send({ cmd: "gpForget" });
+};
 $("drvSwap").onclick = () => send({ cmd: "driver", op: "swap" });
 
 const handlers = {
@@ -1849,6 +1897,16 @@ const handlers = {
   log(m) { deviceLog(m.boot, m.lines); },
   wifi: (m) => renderWifi(m),
   drivers: (m) => renderDrivers(m),
+  gamepad(m) {
+    const txt = { "off": "off (Tune tab: Xbox controller)", "not paired": "not paired",
+                  "searching": "waiting for it - switch it on", "pairing": `pairing... ${m.left} s`,
+                  "connected": m.active ? "connected, driving" : "connected" }[m.state] || m.state;
+    setText($("gpState"), txt);
+    setText($("gpInfo"), (m.addr ? `Paired with ${m.addr}.` : "No controller paired.") +
+                         (m.state === "connected" && m.battery !== undefined ? ` Controller battery ${m.battery}%.` : ""));
+    $("gpPairBtn").disabled = m.state === "off" || m.state === "pairing";
+    $("gpForgetBtn").disabled = !m.addr;
+  },
   schema(m) { buildSettings(m.params); },
   settings(m) {
     applySettings(m.values);

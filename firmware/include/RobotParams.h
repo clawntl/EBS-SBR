@@ -22,6 +22,7 @@ extern bool learnTrim;
 extern float deactivationAngle; // Unit: deg
 extern float engageAngle;       // [deg] from the set point, to start balancing
 extern float runawaySpeed;      // [rad/s] wheel speed that stops balancing
+extern float maxWheelCurrent;   // [A] per-wheel current limit (drivers: 2 A)
 
 extern float alpha; // Complementary filter coefficient
 // IMU sample rate [Hz]. Also the LQR rate and the motor current CAN send

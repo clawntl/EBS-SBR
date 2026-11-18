@@ -10,14 +10,12 @@
 #include "IMUDriver.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
+#include "DriveInput.h"
 #include "Settings.h"
 
 float leftTargetCurrent = 0;
 float rightTargetCurrent = 0;
 
-volatile float joystickAxisX = 0;
-volatile float joystickAxisY = 0;
-volatile unsigned long joystickLastUpdateMs = 0;
 
 volatile BalanceState balanceState = BalanceState::MotorsNotReady;
 
@@ -35,7 +33,6 @@ void publish(const ControlSample &s) {
   portEXIT_CRITICAL(&snapshotLock);
 }
 
-constexpr unsigned long JOYSTICK_TIMEOUT_MS = 300;
 
 // Set point trim learning (see learnTrim). Only while standing still: no
 // drive input for TRIM_SETTLE_MS, balancing for at least that long and not
@@ -64,6 +61,12 @@ constexpr uint32_t RUNAWAY_MS = 300;
 constexpr uint32_t STALL_DISENGAGE_MS = 200;
 
 constexpr uint32_t TRIM_SETTLE_MS = 3000;
+
+// Wheel spin test (tuning, see requestSpinTest()). Set by the web task, run by
+// Task_LQR.
+volatile bool spinTestRequested = false;
+volatile float spinTestAmps = 0;
+volatile uint32_t spinTestPhaseMs = 0;
 constexpr float TRIM_TAU_S = 20.0f;
 constexpr float TRIM_LIMIT_RAD = 5.0f * DEG_TO_RAD;
 
@@ -72,6 +75,22 @@ constexpr float TRIM_LIMIT_RAD = 5.0f * DEG_TO_RAD;
 // samples at the default 500 Hz.
 constexpr uint32_t IMU_SAMPLE_TIMEOUT_MS = 10;
 } // namespace
+
+const char *requestSpinTest(float amps, uint32_t phaseMs) {
+  if (balanceState != BalanceState::Tipped)
+    return "Lay the robot down first (past the cut-out angle), with its wheels free to turn";
+  if (!(amps > 0) || amps > 0.5f) return "Test current must be 0-0.5 A";
+  if (phaseMs < 50 || phaseMs > 2000) return "Test step must be 50-2000 ms";
+  spinTestAmps = amps;
+  spinTestPhaseMs = phaseMs;
+  spinTestRequested = true;
+  // Record it: 4 steps plus a little either side.
+  const uint8_t secs = (uint8_t)constrain((int)((4 * phaseMs + 1500) / 1000), 1, (int)Capture::CAPTURE_MAX_SECONDS);
+  Capture::start(secs, Capture::Trigger::Now);
+  DeviceLog::printf("[test] wheel spin test: %.2f A, %lu ms steps (+, 0, -, 0), recording %u s\n",
+                    amps, (unsigned long)phaseMs, secs);
+  return nullptr;
+}
 
 void serviceSetPointTrim() {
   static uint32_t lastPublishMs = 0, notBalancingSinceMs = 0;
@@ -143,6 +162,8 @@ void Task_LQR(void *pvParam) {
   // Start/stop logic (see ENGAGE_* and RUNAWAY_MS).
   bool engaged = false;
   bool runaway = false;
+  bool spinTesting = false;
+  uint32_t spinStartMs = 0;
   uint32_t readySinceMs = 0, runawaySinceMs = 0, stallSinceMs = 0;
 
   // Loop rate measurement (steps per second).
@@ -197,17 +218,11 @@ void Task_LQR(void *pvParam) {
       // current (left wheel forwards, right backwards) turns the robot.
       const float psi_dot = yawInvert ? -theta_dot[0] : theta_dot[0];
 
-      // Pull in the latest joystick input, but treat it as stale (i.e. zero
-      // it) if WebInterface hasn't refreshed it recently - protects against a
-      // dropped WebSocket leaving the robot driving on a frozen command.
-      float axisX = joystickAxisX;
-      float axisY = joystickAxisY;
-      if (millis() - joystickLastUpdateMs > JOYSTICK_TIMEOUT_MS) {
-        axisX = 0;
-        axisY = 0;
-      }
-      axisX = constrain(axisX, -1.0f, 1.0f);
-      axisY = constrain(axisY, -1.0f, 1.0f);
+      // Drive input from whichever source is in charge (web joystick, BLE
+      // gamepad, CAN module - see DriveInput.h). Stale sources read as 0.
+      const DriveInput::Demand demand = DriveInput::current();
+      const float axisX = demand.turn;
+      const float axisY = demand.speed;
 
       // ---- Set points from the drive input -------------------------------
       // Speed: ramp towards the request at maxWheelAccel. The position
@@ -266,11 +281,12 @@ void Task_LQR(void *pvParam) {
       const float yawCurrentWanted = turnFeedForward * axisX
                                    - (K[2] * headErr + K[5] * (psi_dot - yawRateRef));
 
-      // Each wheel is limited to +-1 A. Balance comes first: the turning
+      // Each wheel is limited to +-maxWheelCurrent. Balance comes first: the turning
       // current only gets what's left, so a hard turn can't starve the
       // balance loop and tip the robot over.
-      const float half = constrain(current_LQR / 2, -1.0f, 1.0f);
-      const float yawRoom = 1.0f - fabsf(half);
+      const float iMax = constrain(maxWheelCurrent, 0.1f, 2.0f);
+      const float half = constrain(current_LQR / 2, -iMax, iMax);
+      const float yawRoom = iMax - fabsf(half);
       const float yawCurrent = constrain(yawCurrentWanted, -yawRoom, yawRoom);
       const float currentLeft = half + yawCurrent;
       const float currentRight = half - yawCurrent;
@@ -327,6 +343,29 @@ void Task_LQR(void *pvParam) {
                                   : BalanceState::Waiting;
       }
 
+      // ---- Wheel spin test (tuning): +I, 0, -I, 0 on both wheels ---------
+      // Only while lying down (tipped), so the wheels are free; stops if the
+      // robot is stood up, the drivers drop out or it's paused.
+      if (spinTestRequested) {
+        spinTestRequested = false;
+        spinTesting = true;
+        spinStartMs = stepMs;
+      }
+      if (spinTesting) {
+        const uint32_t phase = (stepMs - spinStartMs) / spinTestPhaseMs;
+        if (balanceState != BalanceState::Tipped) {
+          spinTesting = false;
+          DeviceLog::println("[test] wheel spin test stopped (robot no longer lying down)");
+        } else if (phase >= 4) {
+          spinTesting = false;
+          DeviceLog::println("[test] wheel spin test done");
+        } else {
+          const float a = phase == 0 ? spinTestAmps : phase == 2 ? -spinTestAmps : 0.0f;
+          leftTargetCurrent = a;
+          rightTargetCurrent = a;
+        }
+      }
+
       // ---- Set point trim learning -----------------------------------------
       const uint32_t nowStepMs = millis();
       const bool still = (balanceState == BalanceState::Balancing) && wasBalancing
@@ -361,6 +400,7 @@ void Task_LQR(void *pvParam) {
       sample.joyX = axisX;
       sample.joyY = axisY;
       sample.state = st;
+      sample.source = (uint8_t)demand.source | (uint8_t)(demand.module << 4);
       sample.posErr = running ? posErr : 0.0f;
       sample.speedRef = running ? speedRef : 0.0f;
       sample.heading = psi * kRadToDeg;

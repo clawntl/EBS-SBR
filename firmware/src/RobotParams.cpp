@@ -9,6 +9,7 @@ bool learnTrim = true;
 float deactivationAngle = 42;
 float engageAngle = 10;
 float runawaySpeed = 60;
+float maxWheelCurrent = 1.5;
 
 float alpha = 0.998;
 uint16_t IMUsampleRate = 500;

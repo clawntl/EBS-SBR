@@ -3,6 +3,7 @@
 #include "CANConfig.h"
 #include "CanBus.h"
 #include "DeviceLog.h"
+#include "Gamepad.h"
 #include "Display.h"
 #include "IMUDriver.h"
 #include "LQRControl.h"
@@ -31,6 +32,8 @@ void setup() {
     displayBootMessage("Starting WiFi...");
     // Network task on core 0: WiFi, web page, OTA and the battery monitor.
     startWebInterface();
+    // BLE Xbox controller (its own task on core 0; Wi-Fi shares the radio).
+    Gamepad::begin();
 
     pinMode(BTN_PIN, INPUT);
 

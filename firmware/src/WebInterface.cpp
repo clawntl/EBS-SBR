@@ -17,6 +17,8 @@
 #include "Capture.h"
 #include "Config.h"
 #include "DeviceLog.h"
+#include "DriveInput.h"
+#include "Gamepad.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
@@ -213,6 +215,19 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
     sendJson(doc, client);
 }
 
+// BLE Xbox controller status (Control tab).
+void sendGamepad(AsyncWebSocketClient *client = nullptr) {
+    const Gamepad::Status g = Gamepad::status();
+    JsonDocument doc;
+    doc["type"] = "gamepad";
+    doc["state"] = Gamepad::stateName(g.state);
+    doc["addr"] = g.address;
+    doc["left"] = g.pairSecondsLeft;
+    doc["active"] = g.inputActive;
+    if (g.battery >= 0) doc["battery"] = g.battery;
+    sendJson(doc, client);
+}
+
 void sendNotice(const String &text, bool ok = true) {
     JsonDocument doc;
     doc["type"] = "notice";
@@ -261,6 +276,11 @@ void broadcastTelemetry() {
     doc["ay"] = r3(c.accel[1]);
     doc["az"] = r3(c.accel[2]);
     doc["hz"] = loopHz;
+    {
+        const DriveInput::Demand dd = DriveInput::lastUsed();
+        doc["src"] = DriveInput::sourceName(dd.source);
+        if (dd.source == DriveInput::Source::Module) doc["srcMod"] = dd.module;
+    }
 
     doc["batt"] = r2(Battery::voltage());
     doc["battL"] = r2(Battery::leftVoltage());
@@ -297,9 +317,7 @@ void broadcastTelemetry() {
 
 void handleJoystick(float x, float y) {
     if (!isfinite(x) || !isfinite(y)) x = y = 0;
-    joystickAxisX = constrain(x, -1.0f, 1.0f);
-    joystickAxisY = constrain(y, -1.0f, 1.0f);
-    joystickLastUpdateMs = millis();
+    DriveInput::setWeb(x, y);
 }
 
 void handleMessage(const uint8_t *data, size_t len) {
@@ -355,6 +373,19 @@ void handleMessage(const uint8_t *data, size_t len) {
             else if (!strcmp(op, "setNode"))  err = requestDriverOp(sd, DriverOp::SetNodeId, v);
         }
         if (err) sendNotice(err, false);
+    } else if (!strcmp(cmd, "spinTest")) {
+        const char *err = requestSpinTest(doc["amps"] | 0.1f, doc["ms"] | 200);
+        sendNotice(err ? err : "Spin test running - recording", !err);
+    } else if (!strcmp(cmd, "recSecs")) {
+        // Saved on its own (not part of Save to flash), unless balancing:
+        // a flash write briefly stalls the control loop.
+        if (Settings::set("recSecs", doc["value"] | 10.0f) && balanceState != BalanceState::Balancing)
+            Settings::saveKey("recSecs");
+    } else if (!strcmp(cmd, "gpPair")) {
+        if (!Gamepad::enabled) sendNotice("Xbox controller support is off (Tune tab: Xbox controller)", false);
+        else Gamepad::requestPairing();
+    } else if (!strcmp(cmd, "gpForget")) {
+        Gamepad::requestForget();
     } else if (!strcmp(cmd, "wifiScan")) {
         WifiManager::requestScan();
     } else if (!strcmp(cmd, "wifiConnect")) {
@@ -383,6 +414,7 @@ void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type
         sendSettings(client);
         sendWifi(client);
         sendDrivers(client);
+        sendGamepad(client);
         sendLog(0, client); // backlog
     } else if (type == WS_EVT_DISCONNECT) {
         DeviceLog::printf("[ws] client #%lu disconnected\n", (unsigned long)client->id());
@@ -596,6 +628,7 @@ void networkTask(void *) {
     uint32_t seenDrivers = driverConfigVersion(), lastDriversMs = 0;
     bool sentBalancing = false;
     uint16_t sentHeard = 0;
+    uint32_t seenGamepad = Gamepad::version(), lastGamepadMs = 0;
     uint32_t sentLogSeq = DeviceLog::latest(); // new clients get the backlog on connect
 
     for (;;) {
@@ -637,6 +670,12 @@ void networkTask(void *) {
                 sentHeard = heard;
                 lastDriversMs = now;
                 sendDrivers();
+            }
+            const uint32_t gv = Gamepad::version();
+            if (gv != seenGamepad && now - lastGamepadMs >= WIFI_BROADCAST_MIN_MS) {
+                seenGamepad = gv;
+                lastGamepadMs = now;
+                sendGamepad();
             }
             const uint32_t wv = WifiManager::version();
             if (wv != seenWifi && now - lastWifiMs >= WIFI_BROADCAST_MIN_MS) {
