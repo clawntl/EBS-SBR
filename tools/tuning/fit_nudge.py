@@ -33,7 +33,7 @@ H = 250    # samples per stretch (0.5 s at 500 Hz)
 STEP = 50  # a new stretch every 0.1 s
 
 
-def closed_loop(r: sm.Robot, D, g: sm.Gains, starts, th0):
+def closed_loop(r: sm.Robot, D, g: sm.Gains, starts, th0, bp=False):
     """Vectorised over stretches: simulate from the measured state."""
     ts = r.ts
     m, rr, l = r.body_mass, r.wheel_radius, r.com_height
@@ -54,7 +54,7 @@ def closed_loop(r: sm.Robot, D, g: sm.Gains, starts, th0):
         out[0, :, k] = tilt
         out[1, :, k] = Td
         out[2, :, k] = wf
-        lqr = -(g.k0 * pos + g.k1 * (tilt - sp) + g.k3 * wf + g.k4 * Td)
+        lqr = g.total_current(r, pos, tilt - sp, wf, Td, balance_priority=bp)
         half = np.clip(lqr / 2, -r.max_current, r.max_current)
         q.append(half)
         u = q.pop(0)
@@ -92,6 +92,7 @@ def main():
     for arg in a.captures:
         path, _, cli = arg.partition("@")
         g = sm.gains_from_capture(path)
+        bp = sm.parse_capture_header(path).get("balPriority", "0") == "1"  # firmware before this setting: off
         d = sm.load_capture(path)
         D = sm.resample(d, r0.ts)
         bal = np.interp(D["t"], d.t_ms.values / 1000.0, (d.state.values == "balancing").astype(float)) > 0.999
@@ -101,7 +102,7 @@ def main():
             continue
         idx = starts[:, None] + np.arange(H)[None, :]
         meas = np.stack([D["tilt"][idx], D["rate"][idx], D["w"][idx]])
-        data.append((path, D, g, starts, meas, float(cli) if cli else r0.cl_i))
+        data.append((path, D, g, starts, meas, float(cli) if cli else r0.cl_i, bp))
     if not data:
         raise SystemExit("no usable captures")
     scale = np.array([math.radians(0.3), math.radians(8), 2.0])[:, None, None]
@@ -120,8 +121,8 @@ def main():
 
     def residuals(p):
         r, th0 = robot_for(p)
-        return np.concatenate([((closed_loop(r.copy(cl_i=ci), D, g, st, th0) - meas) / scale).ravel()
-                               for _, D, g, st, meas, ci in data])
+        return np.concatenate([((closed_loop(r.copy(cl_i=ci), D, g, st, th0, bp) - meas) / scale).ravel()
+                               for _, D, g, st, meas, ci, bp in data])
 
     x0 = [r0.body_inertia, 0.0] + ([r0.com_height] if a.free_com else []) + ([r0.kt] if a.free_kt else [])
     lb = [1e-5, -0.1] + ([0.005] if a.free_com else []) + ([0.005] if a.free_kt else [])

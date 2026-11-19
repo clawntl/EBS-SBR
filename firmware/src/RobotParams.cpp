@@ -10,6 +10,11 @@ float deactivationAngle = 42;
 float engageAngle = 10;
 float runawaySpeed = 60;
 float maxWheelCurrent = 1.5;
+bool balancePriority = true;
+bool liftDetect = true;
+float liftSpeed = 8;
+float wheelRadius = 0.030f;
+float trackWidth = 0.110f;
 
 float alpha = 0.998;
 uint16_t IMUsampleRate = 500;

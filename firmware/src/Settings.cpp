@@ -86,6 +86,31 @@ const ParamDef kParams[] = {
      "Applies immediately. The period is a whole number of milliseconds, so some rates round "
      "(e.g. 300 Hz runs at 333 Hz); the Tune tab shows the real loop rate.",
      [](float v) { IMUsampleRate = (uint16_t)lroundf(v); }, 0},
+    {"balPriority", "Balance first at the current limit (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "After a hard push the tilt terms (K1, K4) and the position/speed terms (K0, K3) can ask for "
+     "current in opposite directions, and their sum can push the wrong way just as the motors run "
+     "out of current. With this on, once the tilt terms alone ask for more than half the current "
+     "limit, the position/speed terms are faded out (gone at the limit), so catching the fall comes "
+     "first and getting back to its spot second. No effect on small pushes.",
+     [](float v) { balancePriority = v > 0.5f; }, 0},
+    {"liftDetect", "Lifted wheel detection (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Going over a bump, one wheel can leave the ground and spin up, which makes the robot think "
+     "it's rolling fast and react wrongly. With this on, when the two wheels' speeds differ by "
+     "more than turning explains (Lift threshold), the controller uses the slower, grounded "
+     "wheel's speed until they agree again. Uses the wheel radius and track below.",
+     [](float v) { liftDetect = v > 0.5f; }, 0},
+    {"liftSpeed", "Lift threshold (rad/s)", "Balance", 8.0f, 3.0f, 50.0f, 0.5f, false,
+     "How far the wheels' speed difference may be from what the measured turn rate explains "
+     "before a wheel counts as lifted or slipping. Normal driving and turning stay within about "
+     "2-5 rad/s; a wheel off the ground passes 30 rad/s within 50 ms.",
+     [](float v) { liftSpeed = v; }, 0},
+    {"wheelDia", "Wheel diameter (mm)", "Balance", 60.0f, 20.0f, 300.0f, 0.5f, false,
+     "Outside diameter of the tyres. Used by Lifted wheel detection to work out how much the "
+     "wheel speeds should differ in a turn.",
+     [](float v) { wheelRadius = v / 2000.0f; }, 0},
+    {"trackWidth", "Track width (mm)", "Balance", 110.0f, 30.0f, 500.0f, 0.5f, false,
+     "Distance between the two tyres' centre lines. Used by Lifted wheel detection.",
+     [](float v) { trackWidth = v / 1000.0f; }, 0},
 
     // ---- Position & heading hold ---------------------------------------------------
     {"K0", "Wheel position (K0)", "Position & heading hold", -0.05f, -2.0f, 2.0f, 0.001f, false,

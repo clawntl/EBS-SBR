@@ -62,6 +62,14 @@ constexpr uint32_t STALL_DISENGAGE_MS = 200;
 
 constexpr uint32_t TRIM_SETTLE_MS = 3000;
 
+// Balance priority (balancePriority): the position/speed terms are faded out
+// between these fractions of the total current limit asked for by the tilt
+// terms alone. Below the first nothing changes.
+constexpr float PRIORITY_FADE_START = 0.5f;
+// Lifted wheel (liftDetect): a wheel stays "lifted" until the wheels agree
+// (mismatch under half the threshold) for this long.
+constexpr uint32_t LIFT_CLEAR_MS = 100;
+
 // Wheel spin test (tuning, see requestSpinTest()). Set by the web task, run by
 // Task_LQR.
 volatile bool spinTestRequested = false;
@@ -171,6 +179,11 @@ void Task_LQR(void *pvParam) {
   uint16_t stepsInWindow = 0;
   BalanceState previousState = BalanceState::MotorsNotReady;
 
+  // Lifted wheel detection: 0 = none, 1 = left lifted, 2 = right lifted.
+  uint8_t lifted = 0;
+  uint32_t liftOkSinceMs = 0, liftStartMs = 0;
+  float liftPeak = 0;
+
   while (1) {
       // Wait for the next IMU sample. pdTRUE: clear the count, so if samples
       // were missed we just run once on the newest one.
@@ -212,11 +225,50 @@ void Task_LQR(void *pvParam) {
       // Only trust the wheel velocities while both drivers are running FOC:
       // a stopped driver stops sending them, so the last value would go stale.
       const bool motorsOk = motorsReady();
-      phi_dot = motorsOk ? ((leftShaftVelocity + rightShaftVelocity) / 2) : 0.0f;
 
       // Yaw rate [rad/s], positive in the direction a positive differential
       // current (left wheel forwards, right backwards) turns the robot.
       const float psi_dot = yawInvert ? -theta_dot[0] : theta_dot[0];
+
+      // ---- Wheel speed, with lifted / slipping wheel detection ------------
+      // On the ground the wheels' speed difference is set by the turn rate:
+      // wheel_l - wheel_r = (track / r) * psi_dot. A wheel that leaves the
+      // ground (a bump) or slips spins away from that within a few ms, and
+      // the average would make the controller think the robot is rolling
+      // fast. Then use the slower wheel (the one still gripping), corrected
+      // for the turn, until they agree again.
+      const float wl = motorsOk ? leftShaftVelocity : 0.0f;
+      const float wr = motorsOk ? rightShaftVelocity : 0.0f;
+      const float turnK = trackWidth / fmaxf(wheelRadius, 0.001f);
+      const float mismatch = (wl - wr) - turnK * psi_dot;
+      {
+        const uint32_t nowMs = millis();
+        if (!liftDetect || !motorsOk || !engaged) {
+          lifted = 0;
+          liftOkSinceMs = 0;
+        } else if (fabsf(mismatch) > liftSpeed) {
+          const uint8_t which = fabsf(wl) > fabsf(wr) ? 1 : 2;
+          if (!lifted) {
+            liftStartMs = nowMs;
+            liftPeak = 0;
+          }
+          lifted = which;
+          liftPeak = fmaxf(liftPeak, fabsf(mismatch));
+          liftOkSinceMs = 0;
+        } else if (lifted) {
+          if (fabsf(mismatch) >= 0.5f * liftSpeed) liftOkSinceMs = 0;
+          else if (!liftOkSinceMs) liftOkSinceMs = nowMs | 1;
+          else if ((int32_t)(nowMs - liftOkSinceMs) >= (int32_t)LIFT_CLEAR_MS) {
+            DeviceLog::printf("[lqr] %s wheel lifted/slipping for %lu ms (up to %.0f rad/s off) - used the other wheel's speed\n",
+                              lifted == 1 ? "left" : "right", (unsigned long)(liftOkSinceMs - liftStartMs), liftPeak);
+            lifted = 0;
+            liftOkSinceMs = 0;
+          }
+        }
+      }
+      phi_dot = lifted == 1 ? wr + 0.5f * turnK * psi_dot   // left in the air: right wheel's speed
+              : lifted == 2 ? wl - 0.5f * turnK * psi_dot   // right in the air: left wheel's
+              : (wl + wr) / 2;
 
       // Drive input from whichever source is in charge (web joystick, BLE
       // gamepad, CAN module - see DriveInput.h). Stale sources read as 0.
@@ -268,12 +320,23 @@ void Task_LQR(void *pvParam) {
       // take with opposite signs (heading).
       //   K0: wheel position    K1: tilt         K2: heading
       //   K3: wheel speed       K4: tilt rate    K5: yaw rate
-      const float current_LQR = -(
-          (K[0] * posErr)
-        + (K[1] * (theta[2] - setPoint))
-        + (K[3] * (phi_dot - speedRef))
-        + (K[4] * theta_dot[2])
-      );
+      //
+      // Split into the tilt terms (catching a fall) and the position/speed
+      // terms (getting back to the spot / speed). After a hard push they can
+      // ask for current in opposite directions; at the current limit their
+      // sum may then push the wrong way and it falls. With balancePriority,
+      // once the tilt terms alone ask for more than PRIORITY_FADE_START of
+      // the limit, the other terms fade out (gone at the limit).
+      const float iMax = constrain(maxWheelCurrent, 0.1f, 2.0f);
+      const float tiltCurrent = -((K[1] * (theta[2] - setPoint)) + (K[4] * theta_dot[2]));
+      float holdScale = 1.0f;
+      if (balancePriority) {
+        const float limit = 2 * iMax, start = PRIORITY_FADE_START * limit;
+        const float over = fabsf(tiltCurrent) - start;
+        if (over > 0) holdScale = fmaxf(0.0f, 1.0f - over / (limit - start));
+      }
+      const float holdCurrent = -((K[0] * posErr) + (K[3] * (phi_dot - speedRef)));
+      const float current_LQR = tiltCurrent + holdScale * holdCurrent;
 
       // ---- Heading (differential) current ---------------------------------
       // Feed-forward for the requested turn, plus feedback on the heading and
@@ -284,7 +347,6 @@ void Task_LQR(void *pvParam) {
       // Each wheel is limited to +-maxWheelCurrent. Balance comes first: the turning
       // current only gets what's left, so a hard turn can't starve the
       // balance loop and tip the robot over.
-      const float iMax = constrain(maxWheelCurrent, 0.1f, 2.0f);
       const float half = constrain(current_LQR / 2, -iMax, iMax);
       const float yawRoom = iMax - fabsf(half);
       const float yawCurrent = constrain(yawCurrentWanted, -yawRoom, yawRoom);
@@ -392,8 +454,10 @@ void Task_LQR(void *pvParam) {
       sample.phi = phi;
       sample.phiDot = phi_dot;
       sample.yawRate = psi_dot * kRadToDeg;
-      sample.wheelL = motorsOk ? leftShaftVelocity : 0.0f;
-      sample.wheelR = motorsOk ? rightShaftVelocity : 0.0f;
+      sample.wheelL = wl;
+      sample.wheelR = wr;
+      sample.lifted = running ? lifted : 0;
+      sample.holdScale = running ? holdScale : 1.0f;
       sample.lqr = current_LQR;
       sample.curL = leftTargetCurrent;
       sample.curR = rightTargetCurrent;

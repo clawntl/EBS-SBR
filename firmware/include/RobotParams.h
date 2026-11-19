@@ -23,6 +23,16 @@ extern float deactivationAngle; // Unit: deg
 extern float engageAngle;       // [deg] from the set point, to start balancing
 extern float runawaySpeed;      // [rad/s] wheel speed that stops balancing
 extern float maxWheelCurrent;   // [A] per-wheel current limit (drivers: 2 A)
+// When the motors are at their limit, the tilt terms (K1, K4) get priority
+// over the position/speed terms (K0, K3): see LQRControl.cpp.
+extern bool balancePriority;
+// Lifted / slipping wheel detection: if the two wheels' speeds differ by more
+// than the turning explains (by liftSpeed rad/s), the wheel speed used by the
+// controller comes from the slower (grounded) wheel only.
+extern bool liftDetect;
+extern float liftSpeed;         // [rad/s]
+extern float wheelRadius;       // [m]
+extern float trackWidth;        // [m] tyre centre to centre
 
 extern float alpha; // Complementary filter coefficient
 // IMU sample rate [Hz]. Also the LQR rate and the motor current CAN send

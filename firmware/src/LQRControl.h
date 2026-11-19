@@ -32,7 +32,7 @@ struct ControlSample {
     float tiltRate;       // [deg/s]
     float setpoint;       // [deg] set point in use (angleSetPoint + learned trim)
     float phi;            // [rad] wheel angle, integrated from phiDot
-    float phiDot;         // [rad/s] average of both wheels' speed (negative = rolling forward)
+    float phiDot;         // [rad/s] wheel speed used: average of both wheels, or the grounded one if a wheel is lifted (negative = rolling forward)
     float yawRate;        // [deg/s] positive = the way a positive yawCur turns it
     float wheelL, wheelR; // [rad/s] as reported by the drivers
     float lqr;            // [A] total balancing current from the LQR (before split/joystick/gating)
@@ -40,6 +40,8 @@ struct ControlSample {
     float joyX, joyY;     // joystick input actually used (-1..1, 0 if stale)
     BalanceState state;
     uint8_t source;       // DriveInput::Source in bits 0-3, module id in bits 4-7
+    uint8_t lifted;       // lifted/slipping wheel: 0 none, 1 left, 2 right (liftDetect)
+    float holdScale;      // 0-1: how much of the K0/K3 terms was used (balancePriority)
 
     // Position & heading hold (0 unless balancing).
     float posErr;         // [rad] wheel angle minus its reference (clamped)

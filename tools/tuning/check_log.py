@@ -123,6 +123,26 @@ def main():
                       f"median settle {np.median([p['settle'] for p in ok]):.2f} s, hardest push recovered "
                       f"{max(p['peak_rate'] for p in ok):.0f} deg/s")
 
+        # Newer firmware: balance priority and lifted wheel columns.
+        if "hold" in d.columns and bal.any():
+            faded = (d.hold.values[bal] < 0.99).mean() * 100
+            print(f"Balance priority (balPriority={hdr.get('balPriority', '?')}): position/speed terms faded "
+                  f"{faded:.1f}% of the time (only after hard pushes)")
+        if "lifted" in d.columns:
+            lf = d.lifted.astype(str).values
+            on = (lf != "-") & (d.state.values == "balancing")
+            starts = np.where(on & ~np.r_[False, on[:-1]])[0]
+            if len(starts):
+                print(f"Lifted/slipping wheel detected {len(starts)} time(s):")
+                for s0 in starts[:10]:
+                    e0 = s0
+                    while e0 + 1 < len(d) and on[e0 + 1]:
+                        e0 += 1
+                    print(f"  {t[s0]:6.2f} s: {'left' if lf[s0] == 'L' else 'right'} wheel, {(t[e0] - t[s0]) * 1000:.0f} ms, "
+                          f"wheels up to {np.abs(d[['wheel_l', 'wheel_r']].values[s0:e0 + 1]).max():.0f} rad/s")
+            else:
+                print("Lifted/slipping wheel: none detected")
+
         st = d.state.values
         for i in np.where((st[:-1] == "balancing") & (st[1:] != "balancing"))[0]:
             a0 = max(0, i - 400)

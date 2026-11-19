@@ -61,6 +61,7 @@ class Robot:
     delay_steps: int = 1               # control steps between measurement and applied current
     speed_filter: float = 0.006        # s, wheel speed filter + telemetry delay seen by the controller
     max_current: float = 1.5           # A per wheel (maxCurrent setting)
+    balance_priority: bool = True      # balPriority setting (firmware: tilt terms first at the limit)
     notes: Dict[str, str] = field(default_factory=dict)
 
     @property
@@ -128,6 +129,7 @@ def load_robot(path: str) -> Robot:
         cl_p=cl.get("p", 3.0), cl_i=cl.get("i", 300.0), voltage_limit=cl.get("voltage_limit_v", 10.0),
         rate_hz=c.get("rate_hz", 500.0), delay_steps=int(c.get("delay_steps", 1)),
         speed_filter=c.get("wheel_speed_filter_s", 0.006), max_current=c.get("max_current_a", 1.5),
+        balance_priority=bool(c.get("balance_priority", True)),
     )
 
 
@@ -150,6 +152,20 @@ class Gains:
     k3: float  # wheel speed       [A/(rad/s)]
     k4: float  # tilt rate         [A/(rad/s)]
     max_pos_err: float = 10.0  # rad
+
+    def total_current(self, r: "Robot", pos, tilt, wheel, rate, balance_priority=None):
+        """The firmware's balance current (total, both wheels) before the
+        per-wheel clamp, including the balance priority fade
+        (LQRControl.cpp, PRIORITY_FADE_START = 0.5). Works on numpy arrays."""
+        tilt_part = -(self.k1 * tilt + self.k4 * rate)
+        hold_part = -(self.k0 * pos + self.k3 * wheel)
+        bp = r.balance_priority if balance_priority is None else balance_priority
+        if bp:
+            limit = 2 * r.max_current
+            start = 0.5 * limit
+            scale = np.clip(1 - (np.abs(tilt_part) - start) / (limit - start), 0.0, 1.0)
+            return tilt_part + scale * hold_part
+        return tilt_part + hold_part
 
     def as_tuple(self):
         return (self.k0, self.k1, self.k3, self.k4)
@@ -398,7 +414,7 @@ def simulate(r: Robot, g: Gains, kick_dps: float = 0.0, tilt0_deg: float = 0.0, 
     out = np.full((n, 5), np.nan)
     fell = False
     for k in range(n):
-        lqr = -(g.k0 * pos + g.k1 * T + g.k3 * wf + g.k4 * Td)
+        lqr = float(g.total_current(r, pos, T, wf, Td))
         half = max(-r.max_current, min(r.max_current, lqr / 2))
         queue.append(half)
         u = queue.pop(0)
