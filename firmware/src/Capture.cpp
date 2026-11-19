@@ -229,7 +229,7 @@ bool CsvReader::nextLine() {
         pending += "# controller: lqr = -(K0*pos_err + K1*(tilt-setpoint) + K3*(phi_dot-speed_ref) + K4*tilt_rate) [A, total]; "
                    "yaw_cur = turnGain*joy_x - (K2*head_err + K5*(yaw_rate-yaw_rate_ref)) [A]; "
                    "cur_l/cur_r = lqr/2 +- yaw_cur, each within +-maxCurrent (balance first), 0 unless balancing; "
-                   "hold = share of the K0/K3 terms used (balPriority fades them at the current limit); "
+                   "hold = share of the K0/K3 terms used (balPriority limits them to 1.5x the total current limit); "
                    "lifted = wheel detected off the ground / slipping (phi_dot then from the other wheel)\n";
         pending += "# units: deg, deg/s, rad, rad/s, A, g; tilt = roll from the IMU filter, setpoint = set point + learned trim, phi = wheel angle (avg of both), "
                    "heading/pos_err/head_err reset when balancing starts; gx..az = raw IMU body axes (x up, y forward, z along the axle)\n";

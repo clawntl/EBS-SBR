@@ -62,10 +62,9 @@ constexpr uint32_t STALL_DISENGAGE_MS = 200;
 
 constexpr uint32_t TRIM_SETTLE_MS = 3000;
 
-// Balance priority (balancePriority): the position/speed terms are faded out
-// between these fractions of the total current limit asked for by the tilt
-// terms alone. Below the first nothing changes.
-constexpr float PRIORITY_FADE_START = 0.5f;
+// Balance priority (balancePriority): the position/speed terms are limited to
+// this multiple of the total current limit. See Task_LQR.
+constexpr float HOLD_LIMIT_FACTOR = 1.5f;
 // Lifted wheel (liftDetect): a wheel stays "lifted" until the wheels agree
 // (mismatch under half the threshold) for this long.
 constexpr uint32_t LIFT_CLEAR_MS = 100;
@@ -324,19 +323,29 @@ void Task_LQR(void *pvParam) {
       // Split into the tilt terms (catching a fall) and the position/speed
       // terms (getting back to the spot / speed). After a hard push they can
       // ask for current in opposite directions; at the current limit their
-      // sum may then push the wrong way and it falls. With balancePriority,
-      // once the tilt terms alone ask for more than PRIORITY_FADE_START of
-      // the limit, the other terms fade out (gone at the limit).
+      // sum may then push the wrong way and it falls: after a hard push the
+      // wheels are spinning fast, and the speed term (K3 x 50-100 rad/s) can
+      // ask for 10 A or more, swamping the tilt terms. With balancePriority
+      // the position/speed terms are limited to HOLD_LIMIT_FACTOR x the total
+      // current limit, so once the tilt terms ask for more than that, they
+      // win. Ordinary pushes and driving rarely reach the limit (a few % of
+      // the time in the logs, briefly).
+      // A plain clamp keeps the current a smooth, monotonic function of the
+      // lean. (A first version faded these terms by a factor that depended
+      // on the tilt demand: inside the fade more lean could give LESS current,
+      // which made the current chatter at ~70 Hz under a sustained push - a
+      // gear-like noise from the motors - and let the robot roll away.)
       const float iMax = constrain(maxWheelCurrent, 0.1f, 2.0f);
       const float tiltCurrent = -((K[1] * (theta[2] - setPoint)) + (K[4] * theta_dot[2]));
-      float holdScale = 1.0f;
+      const float holdWanted = -((K[0] * posErr) + (K[3] * (phi_dot - speedRef)));
+      float holdCurrent = holdWanted;
       if (balancePriority) {
-        const float limit = 2 * iMax, start = PRIORITY_FADE_START * limit;
-        const float over = fabsf(tiltCurrent) - start;
-        if (over > 0) holdScale = fmaxf(0.0f, 1.0f - over / (limit - start));
+        const float holdMax = HOLD_LIMIT_FACTOR * 2 * iMax;
+        holdCurrent = constrain(holdWanted, -holdMax, holdMax);
       }
-      const float holdCurrent = -((K[0] * posErr) + (K[3] * (phi_dot - speedRef)));
-      const float current_LQR = tiltCurrent + holdScale * holdCurrent;
+      // Share of the position/speed terms used (recorded as "hold").
+      const float holdScale = fabsf(holdWanted) > 1e-6f ? holdCurrent / holdWanted : 1.0f;
+      const float current_LQR = tiltCurrent + holdCurrent;
 
       // ---- Heading (differential) current ---------------------------------
       // Feed-forward for the requested turn, plus feedback on the heading and

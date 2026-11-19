@@ -155,16 +155,15 @@ class Gains:
 
     def total_current(self, r: "Robot", pos, tilt, wheel, rate, balance_priority=None):
         """The firmware's balance current (total, both wheels) before the
-        per-wheel clamp, including the balance priority fade
-        (LQRControl.cpp, PRIORITY_FADE_START = 0.5). Works on numpy arrays."""
+        per-wheel clamp, including balance priority (LQRControl.cpp,
+        HOLD_LIMIT_FACTOR = 1.5): the position/speed part is limited to
+        1.5 x the total current limit. Works on numpy arrays."""
         tilt_part = -(self.k1 * tilt + self.k4 * rate)
         hold_part = -(self.k0 * pos + self.k3 * wheel)
         bp = r.balance_priority if balance_priority is None else balance_priority
         if bp:
-            limit = 2 * r.max_current
-            start = 0.5 * limit
-            scale = np.clip(1 - (np.abs(tilt_part) - start) / (limit - start), 0.0, 1.0)
-            return tilt_part + scale * hold_part
+            hold_max = 1.5 * 2 * r.max_current
+            hold_part = np.clip(hold_part, -hold_max, hold_max)
         return tilt_part + hold_part
 
     def as_tuple(self):

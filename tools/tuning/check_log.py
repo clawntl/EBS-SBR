@@ -58,7 +58,12 @@ def pushes(d, threshold=60.0):
             out.append(dict(t=t[i], peak_rate=float(np.abs(r[seg]).max()), peak_tilt=float(np.abs(e[seg]).max()),
                             settle=(t[settled] - t[i]) if settled is not None else None, fell=fell,
                             i0=i, i1=end))
-            i = (settled + 150) if settled is not None else end + 1
+            if settled is not None:
+                i = settled + 150
+            elif fell:
+                i = end + 1
+            else:
+                break  # still recovering when the capture ended
         else:
             i += 1
     return out
@@ -126,8 +131,8 @@ def main():
         # Newer firmware: balance priority and lifted wheel columns.
         if "hold" in d.columns and bal.any():
             faded = (d.hold.values[bal] < 0.99).mean() * 100
-            print(f"Balance priority (balPriority={hdr.get('balPriority', '?')}): position/speed terms faded "
-                  f"{faded:.1f}% of the time (only after hard pushes)")
+            print(f"Balance priority (balPriority={hdr.get('balPriority', '?')}): position/speed terms limited "
+                  f"{faded:.1f}% of the time (should only be during hard pushes)")
         if "lifted" in d.columns:
             lf = d.lifted.astype(str).values
             on = (lf != "-") & (d.state.values == "balancing")

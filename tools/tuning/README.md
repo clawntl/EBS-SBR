@@ -47,7 +47,7 @@ Edit `robot.json`. Each section has a `_note` explaining it.
   - `max_current_a`: the `maxCurrent` setting;
   - `wheel_speed_filter_s`: from step 2;
   - `delay_steps`: leave at 1;
-  - `balance_priority`: the `balPriority` setting (simulated pushes then fade the position/speed terms at the current limit, as the firmware does).
+  - `balance_priority`: the `balPriority` setting (simulated pushes then limit the position/speed terms as the firmware does).
 
 **Check the CAD mass first.** It should be within a few percent of the weighed robot. If it isn't, run `fusion/ListBodyMasses` in Fusion:
 1. Utilities → Add-Ins → Scripts and Add-Ins → Create, then Script (Python), named ListBodyMasses.
@@ -119,7 +119,7 @@ python check_log.py old.csv new.csv --robot robot.json     # compare captures
 | At rest | Tilt-rate jitter and its main frequency; current noise | Lower is better. A strong single frequency means a lightly damped oscillation |
 | Position hold | How often it's at maxPosErr; what set point error the position hold is making up for | An offset over about 0.3° means the set point or learned trim is off: the robot leans and the position term holds it |
 | Pushes | Per push: how hard (peak tilt rate), how far it leaned, settling time, time at the current limit; then a summary | Hardest push recovered, and how long it took |
-| Balance priority, lifted wheels | How often `balPriority` faded the position/speed terms; each lifted/slipping wheel detection (firmware with these columns) | Lifted-wheel detections while driving straight on a flat floor mean `liftSpeed` is too low, or the wheel diameter/track settings are wrong |
+| Balance priority, lifted wheels | How often `balPriority` limited the position/speed terms; each lifted/slipping wheel detection (firmware with these columns) | Lifted-wheel detections while driving straight on a flat floor mean `liftSpeed` is too low, or the wheel diameter/track settings are wrong |
 | Falls | Time at the current limit and wheel speed just before | Wheels above the motors' full-current speed mean the push was more than the motors could catch |
 | Model | Prediction for the capture's gains (with `--robot`) | Frequency should be near the measured one at rest (`--cl-i` if the capture used a different current loop) |
 
@@ -142,7 +142,7 @@ While balancing, the controller hides most of gravity's effect, so the CoM heigh
 - **The robot:** a body (everything that doesn't spin with the wheels) pivoting on the axle, plus two wheels rolling without slipping. Only pitch and forward motion are modelled; turning (K2, K5) isn't.
 - **The motors:** torque = Kt × current, minus Coulomb friction.
 - **The drivers:** SimpleFOC current control. A PI loop on a motor of resistance R, with back-EMF Ke = Kt / 1.5 and the voltage limit. This is why the current lags the command, and why full current isn't available at high wheel speed.
-- **The controller:** the firmware's law (`firmware/src/LQRControl.cpp`): current = −(K0·pos_err + K1·(tilt − set point) + K3·wheel speed + K4·tilt rate), in total for both wheels, clamped to maxCurrent per wheel. With `balPriority`, the K0/K3 part fades out once the K1/K4 part alone asks for more than half the limit. It sees the wheel speed through the reported-speed lag and acts one control step late.
+- **The controller:** the firmware's law (`firmware/src/LQRControl.cpp`): current = −(K0·pos_err + K1·(tilt − set point) + K3·wheel speed + K4·tilt rate), in total for both wheels, clamped to maxCurrent per wheel. With `balPriority`, the K0/K3 part is limited to 1.5 × the total current limit, so after a hard push (wheels spinning fast) the K1/K4 part wins. It sees the wheel speed through the reported-speed lag and acts one control step late.
 - **Gains:** in the firmware's units (A/rad, A/(rad/s), total current).
 - **Signs:** a positive tilt leans the robot the way a positive wheel speed rolls it.
 

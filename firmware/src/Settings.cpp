@@ -89,9 +89,10 @@ const ParamDef kParams[] = {
     {"balPriority", "Balance first at the current limit (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
      "After a hard push the tilt terms (K1, K4) and the position/speed terms (K0, K3) can ask for "
      "current in opposite directions, and their sum can push the wrong way just as the motors run "
-     "out of current. With this on, once the tilt terms alone ask for more than half the current "
-     "limit, the position/speed terms are faded out (gone at the limit), so catching the fall comes "
-     "first and getting back to its spot second. No effect on small pushes.",
+     "out of current: after a hard push the spinning wheels can make the speed term ask for 10 A "
+     "or more. With this on, the position/speed terms are limited to 1.5x the total current limit "
+     "(both wheels), so once the tilt terms ask for more, catching the fall comes first and getting "
+     "back to its spot second. Ordinary pushes and driving rarely reach the limit.",
      [](float v) { balancePriority = v > 0.5f; }, 0},
     {"liftDetect", "Lifted wheel detection (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
      "Going over a bump, one wheel can leave the ground and spin up, which makes the robot think "
