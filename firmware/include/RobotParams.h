@@ -57,3 +57,17 @@ extern bool  yawInvert;      // flip the gyro's yaw sign to match the wheels
 // by hand doesn't wind up and lunge back.
 extern float maxPositionError; // [rad] of wheel rotation
 extern float maxHeadingError;  // [rad]
+
+// Self-righting (see LQRControl.cpp and docs/self-righting.md). Lying on
+// its hoops the wheels are in the air, so the wheels are used as reaction
+// wheels to rock the robot on its hoop until the wheels touch the ground,
+// then the balance controller takes over.
+extern uint8_t selfRightMode;     // 0 off, 1 on request (web / Xbox X / CAN), 2 also automatic
+extern float selfRightCurrent;    // [A] per wheel while rocking
+extern float selfRightWheelCap;   // [rad/s] no more push in the direction the wheels already spin this fast
+extern float selfRightHandover;   // [deg] from the set point: hand over to balancing inside this
+extern float selfRightTimeout;    // [s] per attempt
+extern uint8_t selfRightTries;    // attempts per request
+extern float selfRightDelay;      // [s] lying still this long before an automatic start
+extern bool selfRightInvert;      // flip the push direction (if a push test rocks it the wrong way)
+extern bool selfRightRecord;      // record each self-righting

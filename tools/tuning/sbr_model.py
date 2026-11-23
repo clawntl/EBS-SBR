@@ -1,6 +1,6 @@
 """Model of a two-wheeled self-balancing robot for tuning the EBS-SBR balance
 controller. Shared by the scripts in this folder (fit_spin.py,
-design_gains.py, check_log.py, fit_nudge.py).
+design_gains.py, check_log.py, fit_nudge.py, self_right.py).
 
 What is modelled (pitch / forward motion only; turning is ignored):
 

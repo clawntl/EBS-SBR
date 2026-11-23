@@ -39,6 +39,7 @@ const char *balanceName(BalanceState s) {
         case BalanceState::BatteryLow:     return "BATT LOW";
         case BalanceState::Waiting:        return "HOLD UPRIGHT";
         case BalanceState::Runaway:        return "RUNAWAY";
+        case BalanceState::Righting:       return "SELF-RIGHT";
     }
     return "?";
 }

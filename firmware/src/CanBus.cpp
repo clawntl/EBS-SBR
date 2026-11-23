@@ -185,6 +185,15 @@ static void handleModuleFrame(uint8_t id, const CANMessage &m) {
         turn = maxTurnRate > 0 ? (b / 10.0f) * DEG_TO_RAD / maxTurnRate : 0;
     }
     DriveInput::setModule(id, turn, speed, flags & MODULE_FLAG_DRIVE);
+
+    // Self-right request: when the flag goes from clear to set.
+    static uint8_t lastFlags[16] = {};
+    const bool rising = (flags & MODULE_FLAG_SELF_RIGHT) && !(lastFlags[id & 15] & MODULE_FLAG_SELF_RIGHT);
+    lastFlags[id & 15] = flags;
+    if (rising && DriveInput::modulesAllowed && balanceState != BalanceState::Righting) {
+        const char *err = requestSelfRight();
+        DeviceLog::printf("[can] module %u: self-right %s\n", id, err ? err : "requested");
+    }
 }
 
 static void put16(uint8_t *p, int v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }

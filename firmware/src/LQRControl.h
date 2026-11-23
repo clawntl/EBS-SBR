@@ -19,6 +19,7 @@ enum class BalanceState : uint8_t {
     Balancing,
     Waiting,        // within the cut-out angle but not started: hold it upright and still -> 0 A
     Runaway,        // stopped: wheels spun faster than runawaySpeed (lifted?) -> 0 A until restarted
+    Righting,       // self-righting: rocking itself up on its hoop (see requestSelfRight)
 };
 extern volatile BalanceState balanceState;
 
@@ -65,6 +66,25 @@ ControlSample getControlSnapshot(uint16_t *loopHz = nullptr);
 // at +amps, 0, -amps, 0 for phaseMs each, and records it. Returns nullptr if
 // started, otherwise why not.
 const char *requestSpinTest(float amps, uint32_t phaseMs);
+
+// Self-righting (selfRightMode, docs/self-righting.md). Lying on its hoops
+// with the wheels in the air, it spins the wheels back and forth as reaction
+// wheels, in step with the swing, to rock itself higher on the hoop each
+// time until the wheels touch the ground, then hands over to the balance
+// controller. Starts it if the robot is lying down, or stops it if it's
+// running (*stopping is then set). Returns nullptr if done, otherwise why
+// not. Safe to call from any task.
+const char *requestSelfRight(bool *stopping = nullptr);
+
+// Self-righting push test: with the robot lying down, one push of `ms` at
+// the rocking current in the direction that should rock it towards upright,
+// recorded. Checks the direction (srInvert) before trying the real thing.
+const char *requestSelfRightPush(uint32_t ms);
+
+// Starts the recordings self-righting asks for (srRecord). Call regularly
+// from a core-0 task (the network task does), not from Task_LQR: starting a
+// recording can allocate its buffer.
+void serviceSelfRight();
 
 // Publishes the learned set point trim to Settings (about once a second)
 // and saves it to flash once the robot stops balancing. Call regularly from

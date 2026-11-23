@@ -373,7 +373,8 @@
           <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
           <div class="tile wide"><div class="k">Driving from</div><div class="v" id="cSrc">-</div></div>
         </div>
-        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
+        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button>
+          <button id="selfRightBtn" class="big" style="margin-top:8px" disabled title="Lying on its hoop: rock itself up and start balancing (X on the Xbox controller)">Self-right</button></div>
       </div>
       <div>
         <div class="panel">
@@ -463,6 +464,17 @@
         model needs). Lay the robot down so both wheels turn freely, then run it: both wheels get the current forwards,
         nothing, backwards, nothing, one step each, and it's recorded - download the CSV from Record on the Tune tab.
         Start small: 0.1 A for 200 ms spins a free wheel up to a few tens of rad/s.</p>
+    </div>
+    <div class="panel">
+      <h2>Self-righting push test</h2>
+      <div class="actions">
+        <label>Push <input id="srPushMs" type="number" class="inline" value="150" min="50" max="500" step="10" style="width:5em"> ms</label>
+        <button id="srPushBtn" disabled>Push once</button>
+      </div>
+      <p class="muted">Checks the rocking direction before the robot first rights itself. Lay it on its hoop, then push:
+        both wheels get the rocking current (Tune tab: Self-righting) for this long, in the direction that should rock
+        it <b>towards upright</b>, and it's recorded. If it rocks further over instead, set <b>Flip rocking
+        direction</b> to 1. Pausing stops it.</p>
     </div>
     <div class="panel">
       <h2>About</h2>
@@ -740,7 +752,7 @@ function setConnected(on, text) {
   $("dot").classList.toggle("connected", on);
   $("statusText").textContent = text;
   for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
-                    "wifiAddBtn", "capBtn", "apOnly"]) $(id).disabled = !on;
+                    "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn"]) $(id).disabled = !on;
   $("joystickPad").classList.toggle("disabled", !on);
   if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
 }
@@ -1019,6 +1031,7 @@ function togglePause() {
 $("pauseBtn").onclick = togglePause;
 $("pauseBtn2").onclick = togglePause;
 $("retryBtn").onclick = () => { send({ cmd: "motorRetry" }); log("Retry motor start"); };
+$("selfRightBtn").onclick = () => send({ cmd: "selfRight" });
 
 function setTile(id, text, cls = "") {
   const el = $(id);
@@ -1030,9 +1043,10 @@ const STATE_TEXT = {
   "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
   "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
   "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
+  "righting": "self-righting",
 };
 const STATE_CLASS = {
-  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad",
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn",
 };
 const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
 
@@ -1103,6 +1117,13 @@ function showTelemetry(t) {
   });
   const gaveUp = t.drv.some(d => d.link === "FAILED");
   if ($("retryBtn").hidden !== !gaveUp) $("retryBtn").hidden = !gaveUp;
+
+  {
+    const righting = t.state === "righting";
+    const btn = $("selfRightBtn");
+    setText(btn, righting ? "Stop self-righting" : "Self-right");
+    setClass(btn, righting ? "big danger" : "big");
+  }
 
   pausedNow = t.paused;
   for (const id of ["pauseBtn", "pauseBtn2"]) {
@@ -1929,6 +1950,7 @@ document.querySelectorAll("[data-drv]").forEach((b) => {
   b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
 });
 $("spinBtn").onclick = () => send({ cmd: "spinTest", amps: Number($("spinAmps").value), ms: Number($("spinMs").value) });
+$("srPushBtn").onclick = () => send({ cmd: "selfRightPush", ms: Number($("srPushMs").value) });
 $("gpPairBtn").onclick = () => send({ cmd: "gpPair" });
 $("gpForgetBtn").onclick = async () => {
   if (await ask("Forget the paired controller? You'll need to pair it again to use it.", "Forget", true)) send({ cmd: "gpForget" });

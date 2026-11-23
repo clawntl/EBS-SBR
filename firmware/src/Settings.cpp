@@ -113,6 +113,49 @@ const ParamDef kParams[] = {
      "Distance between the two tyres' centre lines. Used by Lifted wheel detection.",
      [](float v) { trackWidth = v / 1000.0f; }, 0},
 
+    // ---- Self-righting ------------------------------------------------------------
+    {"selfRight", "Self-righting (0 off, 1 on request, 2 auto)", "Self-righting", 1.0f, 0.0f, 2.0f, 1.0f, false,
+     "Getting up after a fall. Lying on its hoops the wheels are in the air, so it spins them back and forth as "
+     "reaction wheels to rock itself on the hoop, a bit higher each swing, until the wheels touch the ground; then "
+     "the balance controller drives it up the rest of the way. 1: on request only (the Self-right button on the "
+     "Control tab, X on the Xbox controller, or a CAN module). 2: also by itself, once it has been lying still for "
+     "the delay below. Pause or press the button again to stop it.",
+     [](float v) { selfRightMode = (uint8_t)lroundf(v); }, 0},
+    {"srCurrent", "Rocking current (A per wheel)", "Self-righting", 1.5f, 0.3f, 2.0f, 0.05f, false,
+     "Current used to spin the wheels while rocking. More rocks it up in fewer swings. In the model even 1 A gets "
+     "it up; the 10 V driver limit caps it at about 1.8 A with the wheels stopped anyway.",
+     [](float v) { selfRightCurrent = v; }, 0},
+    {"srWheelCap", "Rocking wheel speed cap (rad/s)", "Self-righting", 200.0f, 50.0f, 400.0f, 10.0f, false,
+     "While rocking, stop pushing in the direction the wheels are already spinning this fast. Lower is quieter and "
+     "gentler but takes more swings (in the model 150-200 rad/s costs nothing; 100 takes about twice as long). "
+     "The wheels can't go much past 280 rad/s at the drivers' 10 V limit anyway.",
+     [](float v) { selfRightWheelCap = v; }, 0},
+    {"srHandover", "Handover angle (deg)", "Self-righting", 34.0f, 10.0f, 40.0f, 1.0f, false,
+     "Once it has rocked to within this angle of the set point (moving towards upright) the balance controller "
+     "takes over. The wheels touch the ground at about 36 degrees, so just inside that. Always at least 2 degrees "
+     "inside the cut-out angle.",
+     [](float v) { selfRightHandover = v; }, 0},
+    {"srTimeout", "Time per attempt (s)", "Self-righting", 6.0f, 2.0f, 20.0f, 0.5f, false,
+     "If it hasn't got up in this time it stops, lets the rocking die down and tries again. The model needs about "
+     "1.5 s (3 swings).",
+     [](float v) { selfRightTimeout = v; }, 0},
+    {"srTries", "Attempts", "Self-righting", 3.0f, 1.0f, 10.0f, 1.0f, false,
+     "How many times to try per request before giving up. An attempt also counts as failed if it falls over again "
+     "within 2 s of the balance controller taking over.",
+     [](float v) { selfRightTries = (uint8_t)lroundf(v); }, 0},
+    {"srDelay", "Automatic start delay (s)", "Self-righting", 2.0f, 0.5f, 30.0f, 0.5f, false,
+     "With automatic self-righting (2), how long it must lie still before it starts. After giving up it waits "
+     "until it has been moved (stood up or turned over) before trying by itself again.",
+     [](float v) { selfRightDelay = v; }, 0},
+    {"srInvert", "Flip rocking direction (0/1)", "Self-righting", 0.0f, 0.0f, 1.0f, 1.0f, false,
+     "The first push should rock it towards upright. If the push test (Drivers tab) rocks it further over "
+     "instead, set this to 1.",
+     [](float v) { selfRightInvert = v > 0.5f; }, 0},
+    {"srRecord", "Record self-righting (0/1)", "Self-righting", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Start a recording each time it self-rights (if none is running), long enough for one attempt plus a few "
+     "seconds. Download it from Record on the Tune tab.",
+     [](float v) { selfRightRecord = v > 0.5f; }, 0},
+
     // ---- Position & heading hold ---------------------------------------------------
     {"K0", "Wheel position (K0)", "Position & heading hold", -0.23f, -2.0f, 2.0f, 0.001f, false,
      "Holds the robot's position: current per radian of wheel rotation away from where it should "

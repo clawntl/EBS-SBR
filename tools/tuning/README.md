@@ -12,6 +12,7 @@ The approach: describe the robot (mass, CoM, inertia from CAD), measure the moto
 | `design_gains.py` | Designs K0, K1, K3, K4 and maxPosErr, and compares them with the gains you're running now |
 | `check_log.py` | Summarises a balancing capture: jitter at rest, recovery from pushes, why it fell |
 | `fit_nudge.py` | Cross-checks the body inertia and CoM height (and Kt) against balancing captures |
+| `self_right.py` | Simulates self-righting (rocking up on the hoop, then the handover to balancing) for given settings; `hoop_outline.csv` is the hoop it rolls on |
 | `sbr_model.py` | The model all of the above share. `python sbr_model.py robot.json` prints the robot as the model sees it |
 
 ## Setup
@@ -136,6 +137,40 @@ It prints:
 - for each value, whether the captures actually pin it down.
 
 While balancing, the controller hides most of gravity's effect, so the CoM height and inertia are usually only loosely determined. Treat this as a sanity check of the CAD, not a replacement. With four EBS-SBR captures, the fit wanted a CoM of 53 mm against the CAD's 63 mm and fitted 9% better. That's within the noise, so the CAD values stayed.
+
+### 6. Self-righting (`self_right.py`)
+
+```
+python self_right.py                          # both sides, the firmware's default settings
+python self_right.py --current 1.0 --wheel-cap 150
+python self_right.py --sweep                  # rocking current x wheel cap x Kt x tyre grip
+python self_right.py --side back --csv run.csv
+```
+
+Simulates the firmware's self-righting (the `Righting` state; settings on the Tune tab under Self-righting, and `docs/self-righting.md`):
+
+1. **Lying on the hoop:** the wheels are in the air. The script spins them as reaction wheels, with the reaction torque on the body in the direction it's swinging, so each swing goes higher.
+2. **Handover:** once the robot is inside the handover angle and moving towards upright, the balance controller takes over with the gains given (`--gains K0 K1 K3 K4`, default the current set). It drives the robot up the rest of the way.
+3. **Tyres:** they can slip (`--mu`), and the robot falls back onto the hoop if it doesn't make it.
+
+The motors and drivers are modelled as in the other tools.
+
+It also prints what the geometry implies:
+- the resting angle on the hoop;
+- the tilt at which the tyres touch;
+- how much higher the CoM is there.
+
+The hoop comes from `hoop_outline.csv`: the outer ring's outline in the wheel plane, origin on the axle. To remake it from a STEP of the ring, positioned like `Ring.step` (origin on the axle, −x up), run `python self_right.py --step Ring.step` (needs `pip install cadquery-ocp`).
+
+**Check against the robot.** The resting angle it prints should match the tilt the robot reads lying down. EBS-SBR: the model gives ±65.7°, measured +66.3° / −69.8°. That agreement also confirms the CAD CoM height: with a 33 mm CoM it would rest at 36° on the hoop's ends.
+
+**Not modelled:**
+- bounces of the hoop or tyres;
+- the hoop slipping;
+- the two hoops not lining up;
+- turning.
+
+The push direction is the one thing the model can't check. If it's wrong, the rocking dies out and the attempt times out; in the model it never gets close. Use the push test on the Drivers tab first.
 
 ## The model, briefly
 

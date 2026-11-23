@@ -39,6 +39,7 @@ static const uint32_t CAN_RX_FILTER2_MASK = 0x7F0;
 #define MODULE_DRIVE_ID_BASE  0x200
 #define MODULE_FLAG_DRIVE     0x01   // asking to drive (0 = present, not driving)
 #define MODULE_FLAG_FRACTION  0x02   // values are fractions, not units
+#define MODULE_FLAG_SELF_RIGHT 0x04  // set (0 -> 1) = self-right now, if lying down (selfRight setting on)
 // Robot -> modules: state, every 20 ms:
 //   [BalanceState][drive source: DriveInput::Source | module id << 4]
 //   [int16 tilt from set point, 0.01 deg][int16 wheel speed, 0.01 rad/s, + = forward]

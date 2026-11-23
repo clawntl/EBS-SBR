@@ -386,6 +386,14 @@ void handleMessage(const uint8_t *data, size_t len) {
     } else if (!strcmp(cmd, "spinTest")) {
         const char *err = requestSpinTest(doc["amps"] | 0.1f, doc["ms"] | 200);
         sendNotice(err ? err : "Spin test running - recording", !err);
+    } else if (!strcmp(cmd, "selfRight")) {
+        bool stopping = false;
+        const char *err = requestSelfRight(&stopping);
+        if (!err) DeviceLog::printf("[web] self-righting %s\n", stopping ? "stop" : "start");
+        sendNotice(err ? err : stopping ? "Stopping self-righting" : "Self-righting", !err);
+    } else if (!strcmp(cmd, "selfRightPush")) {
+        const char *err = requestSelfRightPush(doc["ms"] | 150);
+        sendNotice(err ? err : "Push test - recording", !err);
     } else if (!strcmp(cmd, "recSecs")) {
         // Saved on its own (not part of Save to flash), unless balancing:
         // a flash write briefly stalls the control loop.
@@ -650,6 +658,7 @@ void networkTask(void *) {
         runPendingActions();
         Battery::update(Settings::value("battCutoff"));
         serviceSetPointTrim();
+        serviceSelfRight();
 
         if (ws.count()) {
             const uint32_t telemetryMs = (uint32_t)Settings::value("telemetryMs");
