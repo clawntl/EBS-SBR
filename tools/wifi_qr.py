@@ -41,6 +41,10 @@ except ImportError:
 # Keep in sync with AP_SSID_PREFIX / AP_PASSWORD_PREFIX in WebInterface.cpp.
 SSID_PREFIX = "BalanceBot-"
 PASSWORD_PREFIX = "balancebot-"
+HOSTNAME_PREFIX = "balancebot-"  # HOSTNAME_PREFIX in firmware/include/Config.h
+
+# The robot serves plain HTTP (no TLS), so this is http:// not https://.
+WEB_URL_TEMPLATE = "http://{hostname}.local"
 
 DEFAULT_OUT = Path(__file__).resolve().parent / "qr-codes"
 
@@ -135,17 +139,28 @@ def main() -> None:
                     help="output directory (default: tools/qr-codes/)")
     args = ap.parse_args()
 
-    args.out.mkdir(parents=True, exist_ok=True)
     for suffix in args.robots:
         ssid = SSID_PREFIX + suffix
         password = PASSWORD_PREFIX + suffix
+        hostname = HOSTNAME_PREFIX + suffix
         payload = wifi_payload(ssid, password)
 
-        png = args.out / f"{ssid}-wifi-qr.png"
-        svg = args.out / f"{ssid}-wifi-qr.svg"
+        out = args.out / hostname
+        out.mkdir(parents=True, exist_ok=True)
+
+        png = out / f"{ssid}-wifi-qr.png"
+        svg = out / f"{ssid}-wifi-qr.svg"
         make_sign(payload, ssid, password).save(png, dpi=(300, 300))
         qrcode.make(payload, image_factory=qrcode.image.svg.SvgPathImage).save(str(svg))
         print(f"{ssid}: {png}, {svg}")
+
+        # Second code: opens the robot's web page.
+        url = WEB_URL_TEMPLATE.format(hostname=hostname)
+        url_png = out / f"{ssid}-url-qr.png"
+        url_svg = out / f"{ssid}-url-qr.svg"
+        qrcode.make(url, box_size=24, border=4).save(str(url_png))
+        qrcode.make(url, image_factory=qrcode.image.svg.SvgPathImage).save(str(url_svg))
+        print(f"{ssid}: {url_png}, {url_svg} ({url})")
 
 
 if __name__ == "__main__":
