@@ -23,6 +23,7 @@ bool paused = false;
 
 float maxWheelSpeed = 10;
 float maxWheelAccel = 20;
+float maxSpeedLead = 8;
 float maxTurnRate = 90 * DEG_TO_RAD;
 float turnFeedForward = 0.15;
 bool yawInvert = false;

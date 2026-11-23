@@ -68,6 +68,9 @@ constexpr float HOLD_LIMIT_FACTOR = 1.5f;
 // Lifted wheel (liftDetect): a wheel stays "lifted" until the wheels agree
 // (mismatch under half the threshold) for this long.
 constexpr uint32_t LIFT_CLEAR_MS = 100;
+// maxSpeedLead compares the speed set point with the wheel speed filtered
+// over this time constant, so single bumps don't move the set point around.
+constexpr float SPEED_LEAD_FILTER_S = 0.05f;
 
 // Wheel spin test (tuning, see requestSpinTest()). Set by the web task, run by
 // Task_LQR.
@@ -160,6 +163,7 @@ void Task_LQR(void *pvParam) {
   // with the drive input (speed / turn-rate set points).
   float phi = 0;
   float phi_dot = 0;
+  float phiDotSlow = 0; // phi_dot low-passed (SPEED_LEAD_FILTER_S), for maxSpeedLead
   float phiRef = 0;
   float speedRef = 0;   // [rad/s] ramped towards the requested speed
   float psi = 0;
@@ -282,9 +286,23 @@ void Task_LQR(void *pvParam) {
       // The drive input is +1 = forward, but the drivers report a NEGATIVE
       // wheel speed when the robot rolls forward (phi, phi_dot, K0 and K3
       // all use the drivers' sign), hence the minus.
+      //
+      // The set point may not run more than maxSpeedLead ahead of the actual
+      // (filtered) wheel speed in the direction of travel. On rough ground
+      // the robot can't keep up with the ramp; without this the growing speed
+      // error made it lean further and further forward (8-10° on the bumpy
+      // test area) until one bigger bump tipped it over. The set point then
+      // waits for the wheels (still ramping at maxWheelAccel at most), so on
+      // smooth ground, where the wheels keep up, nothing changes.
       const float speedWanted = -axisY * maxWheelSpeed;
       const float maxStep = maxWheelAccel * dt;
-      speedRef += constrain(speedWanted - speedRef, -maxStep, maxStep);
+      phiDotSlow += (phi_dot - phiDotSlow) * fminf(1.0f, dt / SPEED_LEAD_FILTER_S);
+      float speedTarget = speedWanted;
+      if (maxSpeedLead > 0) {
+        if (speedWanted > 0 && speedRef >= 0)      speedTarget = fminf(speedWanted, phiDotSlow + maxSpeedLead);
+        else if (speedWanted < 0 && speedRef <= 0) speedTarget = fmaxf(speedWanted, phiDotSlow - maxSpeedLead);
+      }
+      speedRef += constrain(speedTarget - speedRef, -maxStep, maxStep);
       // Turning: the requested yaw rate, and the heading it integrates to.
       const float yawRateRef = axisX * maxTurnRate;
 

@@ -156,6 +156,12 @@ const ParamDef kParams[] = {
      "How quickly the requested speed may change. Lower is gentler starts and stops; very high "
      "makes it lurch (it has to roll backwards briefly to lean into a start).",
      [](float v) { maxWheelAccel = v; }, 0},
+    {"speedLead", "Max speed lead (wheel rad/s)", "Driving", 8.0f, 0.0f, 50.0f, 0.5f, false,
+     "How far the requested speed may run ahead of the wheels' actual speed while speeding up. On "
+     "rough ground the robot can't keep up with the ramp; without a limit the growing speed error "
+     "makes it lean further and further forward until a bump tips it over. With a limit the "
+     "request waits for the wheels. No effect where the wheels keep up. 0 = no limit.",
+     [](float v) { maxSpeedLead = v; }, 0},
     {"maxTurn", "Turn rate (deg/s)", "Driving", 120.0f, 0.0f, 360.0f, 5.0f, false,
      "Turn rate requested at full left/right.",
      [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},

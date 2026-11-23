@@ -48,6 +48,7 @@ extern bool paused;
 // the input is released (see LQRControl.cpp).
 extern float maxWheelSpeed;  // [rad/s] wheel speed at full forward/back
 extern float maxWheelAccel;  // [rad/s^2] how fast the speed set point may change
+extern float maxSpeedLead;   // [rad/s] how far the speed set point may run ahead of the wheels (0 = no limit)
 extern float maxTurnRate;    // [rad/s] yaw rate at full left/right
 extern float turnFeedForward; // [A] differential current at full turn (feed-forward)
 extern bool  yawInvert;      // flip the gyro's yaw sign to match the wheels
