@@ -21,17 +21,17 @@ namespace {
 // the rest are the values that were hard-coded in RobotParams.cpp.
 const ParamDef kParams[] = {
     // ---- Balance gains (LQR) -------------------------------------------------
-    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -25.0f, -30.0f, 30.0f, 0.01f, false,
+    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -20.0f, -30.0f, 30.0f, 0.01f, false,
      "How hard the wheels push back when the robot leans away from the angle set point: the main "
      "'stiffness'. More negative pushes harder; too much makes it oscillate quickly or buzz, too "
      "little and it can't catch itself.",
      [](float v) { K[1] = v; }, 0},
-    {"K4", "Tilt rate (K4)", "Balance gains (LQR)", -0.6f, -3.0f, 3.0f, 0.001f, false,
+    {"K4", "Tilt rate (K4)", "Balance gains (LQR)", -2.0f, -3.0f, 3.0f, 0.001f, false,
      "Damping: how hard the wheels react to how fast the robot is tipping (the gyro rate). Too "
      "little and it overshoots and wobbles; too much makes it twitchy and noisy, because it "
      "amplifies gyro noise.",
      [](float v) { K[4] = v; }, 0},
-    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.08f, -2.0f, 2.0f, 0.001f, false,
+    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.24f, -2.0f, 2.0f, 0.001f, false,
      "Feedback on the wheels' own speed (the average reported by both motor drivers). Stops the "
      "robot rolling away at a steady speed; too much fights the balancing and makes it slow and "
      "swaying.",
@@ -114,7 +114,7 @@ const ParamDef kParams[] = {
      [](float v) { trackWidth = v / 1000.0f; }, 0},
 
     // ---- Position & heading hold ---------------------------------------------------
-    {"K0", "Wheel position (K0)", "Position & heading hold", -0.05f, -2.0f, 2.0f, 0.001f, false,
+    {"K0", "Wheel position (K0)", "Position & heading hold", -0.23f, -2.0f, 2.0f, 0.001f, false,
      "Holds the robot's position: current per radian of wheel rotation away from where it should "
      "be (where it started balancing, moved along by the drive input). Same sign as K3. 0 = off "
      "(it then only resists speed, so it creeps). Start small (e.g. -0.005) and increase until it "
@@ -137,7 +137,7 @@ const ParamDef kParams[] = {
      "the joystick and watch 'Yaw rate' on the chart. It should go positive; if it goes negative "
      "set this to 1. With it wrong the heading hold makes the robot spin.",
      [](float v) { yawInvert = v > 0.5f; }, 0},
-    {"maxPosErr", "Max position error (rad)", "Position & heading hold", 10.0f, 0.5f, 100.0f, 0.5f, false,
+    {"maxPosErr", "Max position error (rad)", "Position & heading hold", 2.0f, 0.5f, 100.0f, 0.5f, false,
      "The most wheel rotation (rad) the position hold acts on. If the robot is pushed further than "
      "this the target moves with it, so it doesn't run back hard. One wheel revolution is 6.28 "
      "rad.",
@@ -176,7 +176,7 @@ const ParamDef kParams[] = {
      "Pair an Xbox controller directly with the robot (Control tab). Off disconnects the controller "
      "and stops all Bluetooth radio use, leaving the radio to Wi-Fi (applies straight away).",
      [](float v) { Gamepad::enabled = v > 0.5f; }, 0},
-    {"gpLayout", "Stick layout (0/1)", "Xbox controller", 0.0f, 0.0f, 1.0f, 1.0f, false,
+    {"gpLayout", "Stick layout (0/1)", "Xbox controller", 1.0f, 0.0f, 1.0f, 1.0f, false,
      "0: left stick does both (forward/back and turning). 1: left stick forward/back, right stick "
      "turning, like an RC car.",
      [](float v) { Gamepad::layout = v > 0.5f ? 1 : 0; }, 0},
