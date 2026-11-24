@@ -236,6 +236,23 @@
   #modal .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; max-width: 420px; }
   #modal p { margin: 0 0 14px; line-height: 1.45; }
   #modal .actions { justify-content: flex-end; }
+  /* Import dialog */
+  .modalwrap {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    align-items: center; justify-content: center; padding: 20px; z-index: 10;
+  }
+  .modalwrap.show { display: flex; }
+  .modalwrap .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+                    max-width: 680px; width: 100%; max-height: 88vh; overflow: auto; }
+  .modalwrap h2 { margin-top: 0; }
+  .modalwrap h3 { font-size: 0.95rem; margin: 14px 0 6px; }
+  .modalwrap .actions { justify-content: flex-end; margin-top: 12px; }
+  .modalwrap label.chk { display: block; margin: 8px 0; }
+  .imp-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .imp-table td { padding: 3px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  .imp-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .imp-table .key { color: var(--muted); font-size: 0.75rem; }
+  .imp-list { font-size: 0.82rem; line-height: 1.5; }
 
   /* Log + toast */
   #log {
@@ -348,11 +365,16 @@
           <button id="saveBtn" class="primary" disabled>Save to flash</button>
           <button id="loadBtn" disabled>Revert to saved</button>
           <button id="defaultsBtn" disabled>Factory defaults</button>
+          <button id="exportBtn" disabled>Export to file</button>
+          <button id="importBtn" disabled>Import from file...</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
         </div>
         <p class="muted">Changes apply immediately but are lost on restart until saved. Saving stalls the
           controller for a moment (flash writes pause both CPU cores), so the robot may twitch - best done while
           it's paused or lying down. Press <b>?</b> next to any setting for an explanation; double-click a label
-          to reset just that setting.</p>
+          to reset just that setting. <b>Export</b> saves every setting to a file (e.g. before trying something, or
+          to copy a tune to another robot); <b>Import</b> shows what a file would change and lets you pick, before
+          anything is applied.</p>
       </div>
     </div>
 
@@ -615,6 +637,18 @@
   </section>
 
   <div id="toast"></div>
+  <div id="importModal" class="modalwrap" role="dialog" aria-modal="true" aria-labelledby="impTitle">
+    <div class="box wide">
+      <h2 id="impTitle">Import settings</h2>
+      <p id="impSource" class="muted"></p>
+      <p id="impWarn" class="warn-text" hidden></p>
+      <label id="impTrimRow" class="chk" hidden><input type="checkbox" id="impTrim"> <span id="impTrimText"></span></label>
+      <div id="impBody"></div>
+      <label class="chk"><input type="checkbox" id="impSave"> Save to flash afterwards (otherwise press <b>Save to
+        flash</b> later, or <b>Revert to saved</b> to undo)</label>
+      <div class="actions"><button id="impCancel">Cancel</button><button id="impOk" class="primary">Import</button></div>
+    </div>
+  </div>
   <div id="modal" role="dialog" aria-modal="true">
     <div class="box">
       <p id="modalText"></p>
@@ -752,7 +786,7 @@ function setConnected(on, text) {
   $("dot").classList.toggle("connected", on);
   $("statusText").textContent = text;
   for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
-                    "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn"]) $(id).disabled = !on;
+                    "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn", "exportBtn", "importBtn"]) $(id).disabled = !on;
   $("joystickPad").classList.toggle("disabled", !on);
   if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
 }
@@ -826,7 +860,12 @@ let schemaKey = "";
 let activeKey = null;     // control being edited: ignore remote updates for it
 let dirty = false;
 
+let schemaList = [];       // every parameter, hidden ones included (for export / import)
+let settingValues = {};    // latest values from the robot
+let fwVersion = "", buildDate = "";
+
 function buildSettings(list) {
+  schemaList = list;
   const key = list.map(p => p.key).join(",");
   if (key === schemaKey) return; // unchanged (reconnect)
   schemaKey = key;
@@ -1004,6 +1043,176 @@ function applySettings(values) {
   }
 }
 $("capSecs").onchange = () => send({ cmd: "recSecs", value: Number($("capSecs").value) });
+
+// ---------------------------------------------------------------------
+// Settings export / import (a JSON file, handled entirely in the page)
+// ---------------------------------------------------------------------
+const SETTINGS_FILE_TYPE = "ebs-sbr-settings";
+
+function downloadText(text, filename, type) {
+  const blob = new Blob([text], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+$("exportBtn").onclick = () => {
+  if (!schemaList.length) { toast("No settings received from the robot yet", false); return; }
+  const settings = {};
+  for (const p of schemaList) if (Number.isFinite(settingValues[p.key])) settings[p.key] = settingValues[p.key];
+  const now = new Date();
+  const file = {
+    type: SETTINGS_FILE_TYPE, format: 1,
+    robot: robotName, firmware: fwVersion, build: buildDate,
+    exported: now.toISOString(),
+    unsaved: dirty,   // true: some values were changed but not saved to flash on the robot
+    settings,
+  };
+  const stamp = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  downloadText(JSON.stringify(file, null, 2) + "\n", `${robotName || "robot"}-settings-${stamp}.json`, "application/json");
+  log(`Exported ${Object.keys(settings).length} settings` + (dirty ? " (including unsaved changes)" : ""));
+};
+
+$("importBtn").onclick = () => { $("importFile").value = ""; $("importFile").click(); };
+$("importFile").onchange = async () => {
+  const f = $("importFile").files[0];
+  if (!f) return;
+  let data;
+  try { data = JSON.parse(await f.text()); } catch (e) { toast("That file isn't valid JSON", false); return; }
+  if (!data || data.type !== SETTINGS_FILE_TYPE || typeof data.settings !== "object" || data.settings === null) {
+    toast("That isn't a settings file exported from this robot's web page", false);
+    return;
+  }
+  if (!schemaList.length) { toast("No settings received from the robot yet", false); return; }
+  showImport(data, f.name);
+};
+
+function fmtValue(p, v) {
+  return p ? Number(v).toFixed(decimals(p.step)) : String(v);
+}
+
+function showImport(data, filename) {
+  const byKey = Object.fromEntries(schemaList.map(p => [p.key, p]));
+  const changes = [], same = [], unknown = [], invalid = [], untouched = [];
+  for (const [key, raw] of Object.entries(data.settings)) {
+    const p = byKey[key];
+    if (!p) { unknown.push(key); continue; }
+    const v = Number(raw);
+    if (raw === null || raw === "" || !Number.isFinite(v)) { invalid.push(key); continue; }
+    const target = Math.min(p.max, Math.max(p.min, v));
+    const cur = settingValues[key];
+    if (Number.isFinite(cur) && Math.abs(target - cur) <= p.step / 2) { same.push(p); continue; }
+    changes.push({ p, from: cur, to: target, clamped: target !== v, raw: v });
+  }
+  for (const p of schemaList) if (!(p.key in data.settings)) untouched.push(p);
+
+  // Where the file came from, and whether the firmware matches.
+  const when = data.exported ? new Date(data.exported).toLocaleString() : "an unknown date";
+  $("impSource").textContent = `${filename}: exported from ${data.robot || "a robot"} on ${when}` +
+    (data.firmware ? `, firmware ${data.firmware}` : "") + (data.build ? ` (built ${data.build})` : "") + "." +
+    (data.unsaved ? " Some of its values hadn't been saved to flash on that robot." : "");
+  const warn = $("impWarn");
+  const fwDiffers = !data.firmware || !fwVersion || data.firmware !== fwVersion;
+  if (fwDiffers) {
+    warn.textContent = `This file is from ${data.firmware ? "firmware " + data.firmware : "firmware without a version number"}` +
+      ` but this robot runs ${fwVersion ? "firmware " + fwVersion : "firmware without a version number"}. ` +
+      "Settings may have been added, removed, or changed meaning since. Only settings with the same names can be " +
+      "imported; check the list below before going ahead.";
+  }
+  warn.hidden = !fwDiffers;
+
+  // The learned set point trim belongs to one robot's IMU mounting: off by default.
+  const trim = changes.find(c => c.p.key === "spTrim");
+  $("impTrimRow").hidden = !trim;
+  $("impTrim").checked = false;
+  if (trim) $("impTrimText").textContent =
+    `Also use the file's learned set point trim (${fmtValue(trim.p, trim.to)}° instead of ${fmtValue(trim.p, trim.from)}°). ` +
+    "Normally left off: the trim is learned for one robot's IMU mounting and weight distribution.";
+
+  const body = $("impBody");
+  body.textContent = "";
+  const h = (text) => { const e = document.createElement("h3"); e.textContent = text; body.appendChild(e); return e; };
+  const para = (text, cls = "imp-list") => { const e = document.createElement("p"); e.className = cls; e.textContent = text; body.appendChild(e); return e; };
+  const name = (p) => `${p.label} (${p.key})`;
+  const boxes = [];
+
+  h(changes.length ? `Will change (${changes.length})` : "Nothing to change: every matching setting already has the file's value");
+  if (changes.length) {
+    const t = document.createElement("table");
+    t.className = "imp-table";
+    for (const c of changes) {
+      const tr = t.insertRow();
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      // Off by default: the trim (see above) and the settings not shown on the
+      // Tune tab, some of which belong to this robot's hardware (node IDs).
+      cb.checked = c.p.key !== "spTrim" && !c.p.hidden;
+      cb.dataset.key = c.p.key;
+      cb.dataset.value = c.to;
+      boxes.push(cb);
+      tr.insertCell().appendChild(cb);
+      const td = tr.insertCell();
+      td.textContent = c.p.label;
+      const k = document.createElement("div");
+      k.className = "key";
+      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs, set on the Drivers tab), so off by default" : "") +
+        (c.clamped ? ` - the file's ${c.raw} is outside ${c.p.min} to ${c.p.max}, so limited` : "");
+      td.appendChild(k);
+      tr.insertCell().className = "num";
+      tr.cells[2].textContent = Number.isFinite(c.from) ? fmtValue(c.p, c.from) : "-";
+      tr.insertCell().textContent = "→";
+      tr.insertCell().className = "num";
+      tr.cells[4].textContent = fmtValue(c.p, c.to);
+      cb.onchange = () => { if (c.p.key === "spTrim") $("impTrim").checked = cb.checked; updateOk(); };
+    }
+    body.appendChild(t);
+  }
+  $("impTrim").onchange = () => {
+    const cb = boxes.find(b => b.dataset.key === "spTrim");
+    if (cb) cb.checked = $("impTrim").checked;
+    updateOk();
+  };
+  if (same.length) {
+    h(`Already the same (${same.length})`);
+    para(same.map(name).join(", "));
+  }
+  if (unknown.length || invalid.length) {
+    h(`In the file but not on this robot - ignored (${unknown.length + invalid.length})`);
+    para(unknown.join(", ") + (invalid.length ? (unknown.length ? "; " : "") + "not a number: " + invalid.join(", ") : ""));
+  }
+  if (untouched.length) {
+    h(`On this robot but not in the file - left as they are (${untouched.length})`);
+    para(untouched.map(p => `${name(p)} = ${fmtValue(p, settingValues[p.key])}`).join(", "));
+  }
+
+  const ok = $("impOk");
+  function updateOk() {
+    const n = boxes.filter(b => b.checked).length;
+    ok.textContent = (fwDiffers ? "Import anyway" : "Import") + (n ? ` (${n})` : "");
+    ok.disabled = n === 0;
+  }
+  updateOk();
+  $("impSave").checked = false;
+
+  const m = $("importModal");
+  const close = () => { m.classList.remove("show"); ok.onclick = $("impCancel").onclick = null; };
+  $("impCancel").onclick = close;
+  ok.onclick = () => {
+    const chosen = boxes.filter(b => b.checked);
+    for (const b of chosen) send({ cmd: "set", key: b.dataset.key, value: Number(b.dataset.value) });
+    const save = $("impSave").checked;
+    if (save) send({ cmd: "save" });
+    log(`Imported ${chosen.length} setting(s) from ${filename}: ` + chosen.map(b => `${b.dataset.key}=${b.dataset.value}`).join(", ") +
+        (save ? "; saved to flash" : " (not saved yet)"));
+    toast(`Imported ${chosen.length} setting(s)` + (save ? " and saved" : " - not saved to flash yet"));
+    close();
+  };
+  m.classList.add("show");
+}
+
+
 
 function updateSaveButton() {
   const btn = $("saveBtn");
@@ -1970,7 +2179,10 @@ const handlers = {
     setText($("iPass"), m.apPassword);
     setText($("iHost"), `http://${m.hostname}.local/`);
     setText($("iSuffix"), m.suffix);
-    $("buildInfo").textContent = `Built ${m.build}.` + (m.psram ? "" : " No PSRAM found: recordings are limited to a few seconds.");
+    fwVersion = m.fw || "";
+    buildDate = m.build || "";
+    $("buildInfo").textContent = (m.fw ? `Version ${m.fw}, built ${m.build}.` : `Built ${m.build}.`) +
+      (m.psram ? "" : " No PSRAM found: recordings are limited to a few seconds.");
   },
   log(m) { deviceLog(m.boot, m.lines); },
   wifi: (m) => renderWifi(m),
@@ -1987,6 +2199,7 @@ const handlers = {
   },
   schema(m) { buildSettings(m.params); },
   settings(m) {
+    settingValues = { ...settingValues, ...m.values };
     applySettings(m.values);
     dirty = m.dirty;
     updateSaveButton();

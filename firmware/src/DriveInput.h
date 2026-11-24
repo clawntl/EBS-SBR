@@ -47,6 +47,13 @@ void setModule(uint8_t id, float turn, float speed, bool drive);
 // Allow CAN modules to drive (the `modules` setting).
 extern bool modulesAllowed;
 
+// Car-style steering in reverse (the `revSteer` setting): while a manual
+// source (web joystick, Xbox controller) asks to go backwards, its turn is
+// mirrored, so "right" swings the robot's back to the right, as when
+// reversing a car, instead of turning it clockwise. CAN modules give a turn
+// RATE (+ = clockwise from above) and are never mirrored.
+extern bool carSteerReverse;
+
 // The demand for this control step (called by Task_LQR).
 Demand current();
 

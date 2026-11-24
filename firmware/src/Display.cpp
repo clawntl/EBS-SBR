@@ -14,6 +14,7 @@
 #include "MotorDrivers.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
+#include "WifiManager.h"
 
 namespace {
 
@@ -43,6 +44,8 @@ const char *balanceName(BalanceState s) {
     }
     return "?";
 }
+
+void drawAddress();
 
 // Problem screen. Returns true if there was something to show.
 bool drawProblems() {
@@ -81,11 +84,26 @@ bool drawProblems() {
     display.setCursor(0, 0);
     display.print("! FAULT");
     display.setTextSize(1);
-    for (int i = 0; i < n; i++) {
+    // Four lines fit above the address line; with more, the last says so.
+    for (int i = 0; i < n && i < 4; i++) {
         display.setCursor(0, 18 + i * 8);
-        display.print(lines[i]);
+        if (i == 3 && n > 4) display.printf("+%d more", n - 3);
+        else display.print(lines[i]);
     }
+    drawAddress();
     return true;
+}
+
+// Bottom line: where to find the web page. The address on the joined
+// network if there is one, otherwise the robot's own access point.
+void drawAddress() {
+    const WifiManager::Status st = WifiManager::status();
+    display.setTextSize(1);
+    display.setCursor(0, 56);
+    if (st.connected && st.ip.length())  display.printf("IP %s", st.ip.c_str());
+    else if (st.apActive)                display.printf("AP %s", st.apIp.c_str());
+    else if (st.connecting)              display.print("Wi-Fi connecting...");
+    else                                 display.print("no network");
 }
 
 void drawNormal() {
@@ -107,16 +125,18 @@ void drawNormal() {
     display.write(DEGREE);
 
     // Commanded currents.
-    display.setCursor(0, 40);
+    display.setCursor(0, 38);
     display.printf("I  L%+5.2f  R%+5.2f A", leftTargetCurrent, rightTargetCurrent);
 
     // Driver state per side (+ T if the driver reports a command timeout).
     const MotorDriverInfo l = getMotorDriverInfo(MOTOR_LEFT);
     const MotorDriverInfo r = getMotorDriverInfo(MOTOR_RIGHT);
-    display.setCursor(0, 52);
+    display.setCursor(0, 47);
     display.printf("L:%s%s R:%s%s",
                    motorLinkName(l.link), (l.flags & DRIVER_FLAG_COMMAND_TIMEOUT) ? "T" : "",
                    motorLinkName(r.link), (r.flags & DRIVER_FLAG_COMMAND_TIMEOUT) ? "T" : "");
+
+    drawAddress();
 }
 
 } // namespace

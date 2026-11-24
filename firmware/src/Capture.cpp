@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "Battery.h"
+#include "Config.h"
 #include "DriveInput.h"
 #include "RobotParams.h"
 #include "Settings.h"
@@ -235,7 +236,7 @@ bool CsvReader::nextLine() {
     if (row < 0) {
         // Header block: everything needed to interpret the run.
         pending = "# Self-balancing robot capture\n";
-        snprintf(line, sizeof(line), "# robot: %s, build: %s %s\n", robotName(), __DATE__, __TIME__);
+        snprintf(line, sizeof(line), "# robot: %s, firmware: %s, build: %s %s\n", robotName(), FIRMWARE_VERSION, __DATE__, __TIME__);
         pending += line;
         snprintf(line, sizeof(line), "# rate_hz: %.0f (every %lu control step(s)), samples: %lu, trigger: %s, battery_v: %.2f\n",
                  rateAtStart, (unsigned long)every, (unsigned long)n, trigger == Trigger::Now ? "now" : "next-balance", batteryAtStart);

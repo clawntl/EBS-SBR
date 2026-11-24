@@ -78,6 +78,7 @@ void sendInfo(AsyncWebSocketClient *client) {
     // Same as on the printed QR sign; anyone seeing this page has joined already.
     doc["apPassword"] = WifiManager::apPassword();
     doc["build"] = __DATE__ " " __TIME__;
+    doc["fw"] = FIRMWARE_VERSION;
     doc["psram"] = ESP.getPsramSize();
     sendJson(doc, client);
 }

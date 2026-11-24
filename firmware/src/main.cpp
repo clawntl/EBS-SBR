@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "CANConfig.h"
+#include "Config.h"
 #include "CanBus.h"
 #include "DeviceLog.h"
 #include "Gamepad.h"
@@ -19,7 +20,7 @@ void setup() {
 
     Serial.begin(115200);
     delay(5000);
-    DeviceLog::println("[boot] EBS-SBR controller starting (built " __DATE__ " " __TIME__ ")");
+    DeviceLog::println("[boot] EBS-SBR controller " FIRMWARE_VERSION " starting (built " __DATE__ " " __TIME__ ")");
 
     // Saved tuning (or the defaults) into the RobotParams globals, before
     // anything uses them.

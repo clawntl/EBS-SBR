@@ -5,6 +5,13 @@
 // Fixed build-time configuration. Tunable parameters live in Settings
 // (src/Settings.cpp) and can be changed live from the web page or serial.
 
+// Controller firmware version: shown on the web page's Info tab and stored in
+// exported settings files, so an import can warn when the file came from
+// different firmware. Bump the minor version when settings are added, removed
+// or renamed, the major version when an existing setting changes meaning or
+// units, and the patch version for anything else.
+#define FIRMWARE_VERSION     "1.0.0"
+
 // ----------------------------------------------
 // Network
 // ----------------------------------------------

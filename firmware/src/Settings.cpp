@@ -216,6 +216,12 @@ const ParamDef kParams[] = {
      "joystick and the Xbox controller always take over while their stick is off-centre; a module "
      "drives when neither is in use. See docs/can-modules.md for the CAN frames.",
      [](float v) { DriveInput::modulesAllowed = v > 0.5f; }, 0},
+    {"revSteer", "Car-style steering in reverse (0/1)", "Driving", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "1: when driving backwards with the joystick or the Xbox controller, left/right work like reversing a car: "
+     "right swings the back of the robot to the right (it turns anticlockwise seen from above). 0: right always "
+     "turns it clockwise, so in reverse it heads off to the left. CAN modules always give a turn rate and aren't "
+     "affected.",
+     [](float v) { DriveInput::carSteerReverse = v > 0.5f; }, 0},
     {"turnGain", "Turn feed-forward (A)", "Driving", 0.1f, 0.0f, 1.0f, 0.01f, false,
      "Differential current added straight away at full left/right (taken from one wheel, added "
      "to the other), so turns start without waiting for the turn-rate error to build. The "
