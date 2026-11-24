@@ -122,13 +122,16 @@ const ParamDef kParams[] = {
      "the delay below. Pause or press the button again to stop it.",
      [](float v) { selfRightMode = (uint8_t)lroundf(v); }, 0},
     {"srCurrent", "Rocking current (A per wheel)", "Self-righting", 1.5f, 0.3f, 2.0f, 0.05f, false,
-     "Current used to spin the wheels while rocking. More rocks it up in fewer swings. In the model even 1 A gets "
-     "it up; the 10 V driver limit caps it at about 1.8 A with the wheels stopped anyway.",
+     "Current used to spin the wheels while rocking. More rocks it up in fewer swings; in the model even 1 A gets "
+     "it up. The drivers only deliver it while the wheels are slow: the motor's own back-voltage leaves less and "
+     "less current as they speed up (none at all by about 140 rad/s with driver firmware 1.4, about 165 rad/s with "
+     "1.5 on a typical battery).",
      [](float v) { selfRightCurrent = v; }, 0},
     {"srWheelCap", "Rocking wheel speed cap (rad/s)", "Self-righting", 200.0f, 50.0f, 400.0f, 10.0f, false,
      "While rocking, stop pushing in the direction the wheels are already spinning this fast. Lower is quieter and "
      "gentler but takes more swings (in the model 150-200 rad/s costs nothing; 100 takes about twice as long). "
-     "The wheels can't go much past 280 rad/s at the drivers' 10 V limit anyway.",
+     "The motors can't spin the wheels much past about 140 rad/s anyway (driver firmware 1.4), or 140-185 rad/s "
+     "with firmware 1.5 depending on the battery, so this only matters if set lower.",
      [](float v) { selfRightWheelCap = v; }, 0},
     {"srHandover", "Handover angle (deg)", "Self-righting", 34.0f, 10.0f, 40.0f, 1.0f, false,
      "Once it has rocked to within this angle of the set point (moving towards upright) the balance controller "

@@ -26,17 +26,20 @@
   },
 
   "motor": {
-    "_note": "kt and friction from fit_spin.py. Resistance: motor datasheet (GM3506: 5.6 ohm phase).",
+    "_note": "kt and friction from fit_spin.py. Resistance PER PHASE: the GM3506 datasheet's 5.6 ohm is line-to-line, so 2.8 (confirmed by capture-304: free wheels top out at ~137 rad/s).",
     "kt_nm_per_a": 0.054,
-    "resistance_ohm": 5.6,
+    "resistance_ohm": 2.8,
     "friction_nm": 0.003
   },
 
   "current_loop": {
-    "_note": "The motor drivers' current loop (Drivers tab, BLDC-Driver firmware 1.4+), and MOTOR_VOLTAGE_LIMIT.",
+    "_note": "The motor drivers' current loop (Drivers tab, BLDC-Driver firmware 1.4+) and how much voltage they can put on the motor (sbr_model.q_voltage_limit). Firmware 1.5+: modulation svpwm, voltage_limit_v 12 (MOTOR_VOLTAGE_LIMIT), max_duty 0.92. Firmware 1.4 and older: modulation sine, voltage_limit_v 10. supply_v: the battery (3S Li-ion: 12.6 full, ~11.1 typical, 9.6 at the cutoff).",
     "p": 3,
     "i": 3000,
-    "voltage_limit_v": 10
+    "modulation": "svpwm",
+    "voltage_limit_v": 12,
+    "max_duty": 0.92,
+    "supply_v": 11.1
   },
 
   "control": {

@@ -52,11 +52,11 @@ class Robot:
     com_height: float = 0.062          # m, BODY CoM above the axle (wheels excluded)
     body_inertia: float = 1.9e-3       # kg m^2, body about its own CoM, pitch axis
     kt: float = 0.052                  # N m per commanded A, per motor
-    resistance: float = 5.6            # ohm, motor phase resistance
+    resistance: float = 2.8            # ohm, motor resistance PER PHASE (GM3506: 5.6 ohm line-to-line)
     friction: float = 0.0013           # N m per motor (Coulomb)
     cl_p: float = 3.0                  # driver current loop P [V/A]
     cl_i: float = 3000.0               # driver current loop I [V/(A s)]
-    voltage_limit: float = 10.0        # V, driver voltage limit (MOTOR_VOLTAGE_LIMIT)
+    voltage_limit: float = 5.9         # V, largest q-axis voltage the drivers can apply (see q_voltage_limit)
     rate_hz: float = 500.0             # control loop rate
     delay_steps: int = 1               # control steps between measurement and applied current
     speed_filter: float = 0.006        # s, wheel speed filter + telemetry delay seen by the controller
@@ -105,6 +105,30 @@ def body_from_cad(cad: dict, mass_total: float, rot_mass: float, rot_inertia: fl
     return l, i_body_axle - m_body * l * l
 
 
+def q_voltage_limit(cl: dict) -> Tuple[float, str]:
+    """Largest q-axis voltage the drivers can put on the motor, from
+    robot.json's current_loop block, and a description of it.
+
+    The PWM outputs swing between 0 and the phase voltage range
+    (SimpleFOC driver.voltage_limit). How much of that reaches the motor
+    depends on the modulation:
+      * "svpwm" (BLDC-Driver firmware 1.5+): the range is max_duty x the
+        supply (followed live), capped at voltage_limit_v
+        (MOTOR_VOLTAGE_LIMIT); the motor gets up to range / sqrt(3).
+      * "sine" (firmware 1.4 and older): the range is voltage_limit_v (10 V),
+        capped at the supply; the motor only gets range / 2.
+    capture-304 (2026-11-23, firmware 1.4) matched "sine": the free wheels
+    topped out at ~137 rad/s, i.e. 5 V of back-EMF."""
+    mod = cl.get("modulation", "sine").lower()
+    supply = cl.get("supply_v", 11.1)
+    vlim = cl.get("voltage_limit_v", 10.0 if mod == "sine" else 12.0)
+    if mod == "svpwm":
+        rng = min(vlim, cl.get("max_duty", 0.92) * supply)
+        return rng / math.sqrt(3), f"Space Vector PWM, {supply:g} V supply -> phases 0-{rng:.2f} V"
+    rng = min(vlim, supply)
+    return rng / 2, f"Sine PWM, phases 0-{rng:.2f} V"
+
+
 def load_robot(path: str) -> Robot:
     with open(path) as f:
         j = json.load(f)
@@ -124,9 +148,9 @@ def load_robot(path: str) -> Robot:
         name=j.get("name", "robot"), mass_total=mass_total, wheel_radius=j["wheel_radius_m"],
         track=j.get("track_m", 0.11), rot_mass=rot_mass, rot_inertia=rot_inertia,
         com_height=l, body_inertia=ib,
-        kt=m.get("kt_nm_per_a", 0.05), resistance=m.get("resistance_ohm", 5.6),
+        kt=m.get("kt_nm_per_a", 0.05), resistance=m.get("resistance_ohm", 2.8),
         friction=m.get("friction_nm", 0.0013),
-        cl_p=cl.get("p", 3.0), cl_i=cl.get("i", 300.0), voltage_limit=cl.get("voltage_limit_v", 10.0),
+        cl_p=cl.get("p", 3.0), cl_i=cl.get("i", 300.0), voltage_limit=q_voltage_limit(cl)[0],
         rate_hz=c.get("rate_hz", 500.0), delay_steps=int(c.get("delay_steps", 1)),
         speed_filter=c.get("wheel_speed_filter_s", 0.006), max_current=c.get("max_current_a", 1.5),
         balance_priority=bool(c.get("balance_priority", True)),
@@ -137,7 +161,7 @@ def describe(r: Robot) -> str:
     return (f"{r.name}: {r.mass_total*1000:.0f} g, wheel r {r.wheel_radius*1000:.1f} mm, body CoM {r.com_height*1000:.1f} mm "
             f"above the axle, body inertia {r.body_inertia*1e9:.0f} g mm^2 (about its CoM), "
             f"rotating {r.rot_mass*1000:.1f} g / {r.rot_inertia*1e9:.0f} g mm^2 per side, Kt {r.kt:.4f} N m/A, "
-            f"current loop P {r.cl_p:g} I {r.cl_i:g} on R {r.resistance:g} ohm")
+            f"current loop P {r.cl_p:g} I {r.cl_i:g} on R {r.resistance:g} ohm, motor voltage up to {r.voltage_limit:.2f} V")
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +447,7 @@ def simulate(r: Robot, g: Gains, kick_dps: float = 0.0, tilt0_deg: float = 0.0, 
         else:
             i = (r.cl_p * u + x - r.ke * wr) / (r.resistance + r.cl_p)
             v = r.cl_p * (u - i) + x
-            if abs(v) > r.voltage_limit:           # driver voltage limit
+            if abs(v) > r.voltage_limit:           # drivers' q-axis voltage limit
                 v = math.copysign(r.voltage_limit, v)
                 i = (v - r.ke * wr) / r.resistance
             x = max(-r.voltage_limit, min(r.voltage_limit, x + r.cl_i * (u - i) * ts))
@@ -479,4 +503,5 @@ if __name__ == "__main__":
           f"(the faster this is, the harder it is to balance)")
     print(f"Current loop follows a step in about {1000 * (r.resistance + r.cl_p) / max(r.cl_i, 1e-9):.1f} ms; "
           f"full {r.max_current:g} A is available up to about "
-          f"{(r.voltage_limit - r.max_current * r.resistance) / r.ke:.0f} rad/s of wheel speed")
+          f"{(r.voltage_limit - r.max_current * r.resistance) / r.ke:.0f} rad/s of wheel speed, "
+          f"and none beyond {r.voltage_limit / r.ke:.0f} rad/s")

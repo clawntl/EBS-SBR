@@ -41,8 +41,13 @@ Edit `robot.json`. Each section has a `_note` explaining it.
   - `inertia_axle_gmm2`: *Moment of Inertia at Origin* about the axle axis (ixx for EBS-SBR, whose axle is along x).
 
   The tools work out the body's own CoM height and inertia from these, and scale the CAD to the weighed mass. If your origin isn't on the axle, fill in **`body`** instead (body CoM height above the axle, body inertia about its own CoM) and the `cad` block is ignored.
-- **`motor`**: the phase resistance from the motor's datasheet (GM3506: 5.6 Ω). `kt_nm_per_a` and `friction_nm` come from step 2.
-- **`current_loop`**: the drivers' current loop P and I, as set on the Drivers tab (BLDC-Driver firmware 1.4+), and the drivers' voltage limit (`MOTOR_VOLTAGE_LIMIT`, 10 V).
+- **`motor`**: the resistance **per phase**. Datasheets often give it line-to-line, which is twice as much: the GM3506's 5.6 Ω means 2.8 Ω here. `kt_nm_per_a` and `friction_nm` come from step 2.
+- **`current_loop`**: the drivers' current loop P and I, as set on the Drivers tab (BLDC-Driver firmware 1.4+), and how much voltage the drivers can put on the motor. That depends on the driver firmware and the battery:
+  - **Firmware 1.5+:** `"modulation": "svpwm"`, `"voltage_limit_v": 12`, `"max_duty": 0.92`. The motor gets up to 0.92 × supply / √3.
+  - **Firmware 1.4 and older:** `"modulation": "sine"`, `"voltage_limit_v": 10`. The motor gets only 5 V.
+  - **`supply_v`:** the battery voltage to model. For a 3S Li-ion pack that's 12.6 V full, about 11.1 V for most of a charge and 9.6 V at the cutoff.
+
+  `python sbr_model.py robot.json` prints the resulting motor voltage and up to what wheel speed full current is available.
 - **`control`**:
   - `rate_hz`: the `imuRate` setting;
   - `max_current_a`: the `maxCurrent` setting;
@@ -176,7 +181,7 @@ The push direction is the one thing the model can't check. If it's wrong, the ro
 
 - **The robot:** a body (everything that doesn't spin with the wheels) pivoting on the axle, plus two wheels rolling without slipping. Only pitch and forward motion are modelled; turning (K2, K5) isn't.
 - **The motors:** torque = Kt × current, minus Coulomb friction.
-- **The drivers:** SimpleFOC current control. A PI loop on a motor of resistance R, with back-EMF Ke = Kt / 1.5 and the voltage limit. This is why the current lags the command, and why full current isn't available at high wheel speed.
+- **The drivers:** SimpleFOC current control. A PI loop on a motor of resistance R (per phase), with back-EMF Ke = Kt / 1.5 and the q-axis voltage limit (see `current_loop` above). This is why the current lags the command, and why full current isn't available at high wheel speed.
 - **The controller:** the firmware's law (`firmware/src/LQRControl.cpp`): current = −(K0·pos_err + K1·(tilt − set point) + K3·wheel speed + K4·tilt rate), in total for both wheels, clamped to maxCurrent per wheel. With `balPriority`, the K0/K3 part is limited to 1.5 × the total current limit, so after a hard push (wheels spinning fast) the K1/K4 part wins. It sees the wheel speed through the reported-speed lag and acts one control step late.
 - **Gains:** in the firmware's units (A/rad, A/(rad/s), total current).
 - **Signs:** a positive tilt leans the robot the way a positive wheel speed rolls it.

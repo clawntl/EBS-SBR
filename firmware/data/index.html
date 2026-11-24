@@ -449,8 +449,8 @@
       <p class="muted">The drivers' current (torque) controller: how quickly the motor current follows what the
         balance controller asks for. It applies at once; press <b>Save &amp; reboot</b> on each driver to keep it
         (<b>Revert</b> goes back to the saved values). The defaults (P 3, I 300, filter 0.53 ms) are slow on these
-        5.6 &Omega; gimbal motors: about 30 ms to follow a step. Raising <b>I</b> is the main way to speed it up:
-        roughly (5.6 + P) / I seconds, so I = 1500 gives about 6 ms and 3000 about 3 ms. Too much P can make the motor
+        gimbal motors (2.8 &Omega; per phase): about 20 ms to follow a step. Raising <b>I</b> is the main way to speed it
+        up: roughly (2.8 + P) / I seconds, so I = 1500 gives about 4 ms and 3000 about 2 ms. Too much P can make the motor
         whine or buzz. Re-run the spin test after a change. Needs driver firmware 1.4.</p>
     </div>
     <div class="panel">
