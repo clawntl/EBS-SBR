@@ -78,7 +78,9 @@ python fit_spin.py robot.json BalanceBot-xxxx-capture-179.csv
 python fit_spin.py robot.json old-test.csv --cl-i 300     # recorded with a different current loop I
 ```
 
-It fits each wheel's speed with the motor + current-loop model, and prints `kt_nm_per_a`, `friction_nm` and `wheel_speed_filter_s` for robot.json.
+It fits each wheel's speed with the motor + current-loop model, and prints `kt_nm_per_a`, `friction_nm` and `wheel_speed_filter_s` for robot.json. The model includes the motors' voltage limit, worked out from `current_loop` in robot.json and the battery voltage in the capture's header, so long steps that reach top speed fit too.
+
+**Driver firmware 1.6+.** The capture also has the currents the drivers measured (`iq_l`, `iq_r`, `id_l`, `id_r`), and the script fits Kt a second way, straight from them: wheel inertia × acceleration = Kt × measured current − friction. This needs no current-loop model. It also prints how the measured current compares with the command at low wheel speed (about 1.0 if the current loop does what it's told). For this a longer test works best, e.g. **0.5 A, 1000 ms**: hold or prop the robot so it can't rock on its hoop.
 
 - **Kt** is the torque per *commanded* amp, so it includes any current-sensing scale error. That's what the controller needs.
 - **Re-run the test after changing the current loop.** EBS-SBR measured 0.048 at I = 300 and 0.054 at I = 3000, even with the loop modelled.

@@ -751,6 +751,10 @@ void Task_LQR(void *pvParam) {
       sample.lqr = current_LQR;
       sample.curL = leftTargetCurrent;
       sample.curR = rightTargetCurrent;
+      sample.iqL = motorsOk ? leftMeasuredIq : NAN;
+      sample.iqR = motorsOk ? rightMeasuredIq : NAN;
+      sample.idL = motorsOk ? leftMeasuredId : NAN;
+      sample.idR = motorsOk ? rightMeasuredId : NAN;
       sample.joyX = axisX;
       sample.joyY = axisY;
       sample.state = st;

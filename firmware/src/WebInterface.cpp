@@ -267,6 +267,9 @@ void broadcastTelemetry() {
     doc["lqr"] = r3(c.lqr);
     doc["cl"] = r3(c.curL);
     doc["cr"] = r3(c.curR);
+    // Measured q currents (driver firmware 1.6+); absent = not reported.
+    if (isfinite(c.iqL)) doc["ml"] = r3(c.iqL);
+    if (isfinite(c.iqR)) doc["mr"] = r3(c.iqR);
     doc["jx"] = r2(c.joyX);
     doc["jy"] = r2(c.joyY);
     doc["perr"] = r3(c.posErr);
@@ -304,6 +307,10 @@ void broadcastTelemetry() {
         d["link"] = motorLinkName(m.link);
         d["flags"] = m.flags;
         d["tries"] = m.startAttempts;
+        // Measured currents, as above (q and d).
+        const float iq = s == 0 ? c.iqL : c.iqR, id = s == 0 ? c.idL : c.idR;
+        if (isfinite(iq)) d["iq"] = r3(iq);
+        if (isfinite(id)) d["id"] = r3(id);
         if (m.lastError) {
             d["err"] = driverErrorName(m.lastError);
             d["errAge"] = m.lastErrorAgeMs / 1000;

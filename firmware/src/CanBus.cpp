@@ -15,6 +15,8 @@
 
 float leftShaftVelocity = 0;
 float rightShaftVelocity = 0;
+float leftMeasuredIq = NAN, leftMeasuredId = NAN;
+float rightMeasuredIq = NAN, rightMeasuredId = NAN;
 
 bool canBusOk = false;
 
@@ -126,8 +128,13 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
         case CMD_SHAFT_VELOCITY: {
             if (rxMsg.len < 5) return;
             const float v = bytes2floatMSB(rxMsg.data + 1);
-            if (side == MOTOR_LEFT) leftShaftVelocity = v;
-            else                    rightShaftVelocity = v;
+            float iq = NAN, id = NAN;
+            if (rxMsg.len >= 8) {
+                iq = (int16_t)((rxMsg.data[5] << 8) | rxMsg.data[6]) / 1000.0f;
+                id = (int8_t)rxMsg.data[7] * (DRIVER_D_CURRENT_LSB_MA / 1000.0f);
+            }
+            if (side == MOTOR_LEFT) { leftShaftVelocity = v;  leftMeasuredIq = iq;  leftMeasuredId = id; }
+            else                    { rightShaftVelocity = v; rightMeasuredIq = iq; rightMeasuredId = id; }
             break;
         }
         case CMD_DRIVER_STATUS: {

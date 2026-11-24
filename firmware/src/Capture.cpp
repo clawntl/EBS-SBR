@@ -23,7 +23,8 @@ constexpr size_t PSRAM_RESERVE = 256 * 1024;
 // Without PSRAM (shouldn't happen on the ESP32-S3 Zero) fall back to this.
 constexpr uint32_t FALLBACK_SAMPLES = 1000;
 
-// Fixed point, 60 bytes per sample (30 000 samples = 1.8 MB of PSRAM).
+// Fixed point, 68 bytes per sample (30 000 samples = 2.0 MB of PSRAM; with
+// the S3 Zero's 2 MB of PSRAM it gets room for about 50 s at 500 Hz).
 struct Sample {
     uint32_t tUs;      // since the trigger
     int16_t tilt;      // deg x 100
@@ -52,8 +53,11 @@ struct Sample {
     int16_t accel[3];  // g x 10000 (+-2 g range)
     uint8_t lifted;    // 0 none, 1 left, 2 right
     uint8_t hold;      // holdScale x 100
+    int16_t iqL, iqR;  // measured q current, A x 1000 (NO_VALUE = not reported)
+    int16_t idL, idR;  // measured d current, A x 1000
 };
-static_assert(sizeof(Sample) == 60, "Sample should pack to 60 bytes");
+static_assert(sizeof(Sample) == 68, "Sample should pack to 68 bytes");
+constexpr int16_t NO_VALUE = INT16_MIN;
 
 Sample *buffer = nullptr;
 uint32_t allocated = 0;
@@ -74,6 +78,11 @@ std::vector<float> settingsAtStart;
 int16_t fixed(float v, float scale) {
     const float x = v * scale;
     return (int16_t)constrain(x, -32767.0f, 32767.0f);
+}
+
+// Like fixed(), but NO_VALUE for a missing (non-finite) value.
+int16_t fixedOrNone(float v, float scale) {
+    return isfinite(v) ? fixed(v, scale) : NO_VALUE;
 }
 
 int8_t fixed8(float v, float scale) {
@@ -203,6 +212,10 @@ void record(const ControlSample &s, BalanceState previousState) {
     }
     d.lifted = s.lifted;
     d.hold = (uint8_t)lroundf(constrain(s.holdScale, 0.0f, 1.0f) * 100.0f);
+    d.iqL = fixedOrNone(s.iqL, 1000);
+    d.iqR = fixedOrNone(s.iqR, 1000);
+    d.idL = fixedOrNone(s.idL, 1000);
+    d.idR = fixedOrNone(s.idR, 1000);
     count = i + 1;
     if (i + 1 >= cap) current = State::Done;
 }
@@ -231,7 +244,9 @@ bool CsvReader::nextLine() {
                    "yaw_cur = turnGain*joy_x - (K2*head_err + K5*(yaw_rate-yaw_rate_ref)) [A]; "
                    "cur_l/cur_r = lqr/2 +- yaw_cur, each within +-maxCurrent (balance first), 0 unless balancing; "
                    "hold = share of the K0/K3 terms used (balPriority limits them to 1.5x the total current limit); "
-                   "lifted = wheel detected off the ground / slipping (phi_dot then from the other wheel)\n";
+                   "lifted = wheel detected off the ground / slipping (phi_dot then from the other wheel); "
+                   "iq_l..id_r = currents the motor drivers measured (q = torque, same sign as cur_l/cur_r; d should stay near 0; "
+                   "empty with driver firmware before 1.6)\n";
         pending += "# units: deg, deg/s, rad, rad/s, A, g; tilt = roll from the IMU filter, setpoint = set point + learned trim, phi = wheel angle (avg of both), "
                    "heading/pos_err/head_err reset when balancing starts; gx..az = raw IMU body axes (x up, y forward, z along the axle)\n";
         size_t paramCount;
@@ -243,7 +258,8 @@ bool CsvReader::nextLine() {
         }
         pending += " (at the start of the recording)\n";
         pending += "t_ms,state,tilt,tilt_rate,setpoint,phi,phi_dot,yaw_rate,wheel_l,wheel_r,lqr,cur_l,cur_r,joy_x,joy_y,"
-                   "pos_err,speed_ref,heading,head_err,yaw_rate_ref,yaw_cur,pitch,gx,gy,gz,ax,ay,az,drive_src,hold,lifted\n";
+                   "pos_err,speed_ref,heading,head_err,yaw_rate_ref,yaw_cur,pitch,gx,gy,gz,ax,ay,az,drive_src,hold,lifted,"
+                   "iq_l,iq_r,id_l,id_r\n";
         row = 0;
         return true;
     }
@@ -255,7 +271,7 @@ bool CsvReader::nextLine() {
     else snprintf(src, sizeof(src), "%s", DriveInput::sourceName((DriveInput::Source)srcKind));
     const int len = snprintf(line, sizeof(line),
                              "%.3f,%s,%.2f,%.1f,%.2f,%.1f,%.2f,%.1f,%.2f,%.2f,%.3f,%.3f,%.3f,%.2f,%.2f,"
-                             "%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.2f,%.1f,%.1f,%.1f,%.4f,%.4f,%.4f,%s,%.2f,%s\n",
+                             "%.2f,%.2f,%.1f,%.2f,%.1f,%.3f,%.2f,%.1f,%.1f,%.1f,%.4f,%.4f,%.4f,%s,%.2f,%s,",
                              s.tUs / 1000.0f, stateCsvName(s.state), s.tilt / 100.0f, s.tiltRate / 10.0f,
                              s.setpoint / 100.0f, s.phi / 10.0f, s.phiDot / 100.0f, s.yawRate / 10.0f,
                              s.wheelL / 100.0f, s.wheelR / 100.0f, s.lqr / 1000.0f, s.curL / 1000.0f,
@@ -265,7 +281,16 @@ bool CsvReader::nextLine() {
                              s.gyro[0] / 10.0f, s.gyro[1] / 10.0f, s.gyro[2] / 10.0f,
                              s.accel[0] / 10000.0f, s.accel[1] / 10000.0f, s.accel[2] / 10000.0f, src,
                              s.hold / 100.0f, s.lifted == 1 ? "L" : s.lifted == 2 ? "R" : "-");
-    pending = String(line, len);
+    pending = String(line, len > 0 ? min(len, (int)sizeof(line) - 1) : 0);
+    // Measured currents: empty when not reported.
+    const int16_t meas[4] = {s.iqL, s.iqR, s.idL, s.idR};
+    for (int k = 0; k < 4; k++) {
+        if (meas[k] != NO_VALUE) {
+            const int n2 = snprintf(line, sizeof(line), "%.3f", meas[k] / 1000.0f);
+            pending += String(line, n2);
+        }
+        pending += k < 3 ? "," : "\n";
+    }
     return true;
 }
 

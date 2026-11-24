@@ -261,7 +261,7 @@ const ParamDef kParams[] = {
      "Length of a recording: the Record panel's choice, also used by the Xbox controller's Y button.",
      [](float) {}, PARAM_FLAG_HIDDEN},
     {"recEvery", "Record every Nth step", "System", 1.0f, 1.0f, 20.0f, 1.0f, false,
-     "Recordings normally keep every control step (up to about 60 s at 500 Hz, 30 s at 1000 Hz). "
+     "Recordings normally keep every control step (up to about 50 s at 500 Hz, 25 s at 1000 Hz). "
      "2 keeps every other step and doubles the longest recording, and so on. Applies to the next "
      "recording.",
      [](float) {}, 0},

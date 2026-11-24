@@ -1053,6 +1053,8 @@ const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8,
 function driverText(d, volts, detailed) {
   const parts = [d.link];
   if (volts > 0) parts.push(volts.toFixed(2) + " V");
+  if (detailed && Number.isFinite(d.iq))
+    parts.push(`measured q ${d.iq >= 0 ? "+" : ""}${d.iq.toFixed(2)} A, d ${d.id >= 0 ? "+" : ""}${(d.id ?? 0).toFixed(2)} A`);
   const flags = DRV_FLAGS.filter(([bit, name]) => (d.flags & bit) && (detailed || bit !== 2 && bit !== 4)).map(([, n]) => n);
   if (flags.length) parts.push(flags.join(", "));
   if (d.err) parts.push(`last error: ${d.err} (${d.errAge} s ago)`);
@@ -1147,7 +1149,7 @@ function showTelemetry(t) {
 // ---------------------------------------------------------------------
 const hist = (() => {
   const RAW_MS = 60000, BUCKET_MS = 1000, BUCKETS_MS = 3600000;
-  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "batt", "battL", "battR",
+  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "ml", "mr", "batt", "battL", "battR",
                 "yaw", "yref", "hdg", "herr", "perr", "vref", "ycur",
                 "pitch", "gx", "gy", "gz", "ax", "ay", "az"];
   let raw = [], buckets = [], cur = null, head = 0;
@@ -1408,6 +1410,8 @@ charts.make({
     { key: "wheel", label: "Wheel speed (rad/s)",      colour: "#c77dff", on: false },
     { key: "cl",    label: "Left current (A ×10)",     colour: "#f06292", on: false, scale: 10 },
     { key: "cr",    label: "Right current (A ×10)",    colour: "#4dd0e1", on: false, scale: 10 },
+    { key: "ml",    label: "Left measured (A ×10)",    colour: "#ad1457", on: false, scale: 10 },
+    { key: "mr",    label: "Right measured (A ×10)",   colour: "#00838f", on: false, scale: 10 },
     { key: "vref",  label: "Speed set point (rad/s)",  colour: "#e0c35a", on: false },
     { key: "perr",  label: "Position error (rad)",     colour: "#a1887f", on: false },
     { key: "yaw",   label: "Yaw rate (°/s ÷10)",       colour: "#ff6b6b", on: false, scale: 0.1 },

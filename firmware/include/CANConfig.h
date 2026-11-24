@@ -73,8 +73,14 @@ static const uint32_t CAN_RX_FILTER2_MASK = 0x7F0;
 // Standard message command byte
 // Must match include/can_protocol.h in the bldc_driver firmware.
 // ----------------------------------------------
+// Scale of the d current in CMD_SHAFT_VELOCITY (driver D_CURRENT_LSB_MA).
+#define DRIVER_D_CURRENT_LSB_MA 16
+
 enum CAN_CMD : uint8_t {
-    // Driver -> host: [0x02][float rad/s, big-endian]
+    // Driver -> host: [0x02][float rad/s, big-endian], and from driver CAN
+    // protocol 6 (firmware 1.6) [measured q current, int16 mA big-endian]
+    // [measured d current, int8 x DRIVER_D_CURRENT_LSB_MA]. Older drivers
+    // send 5 bytes.
     CMD_SHAFT_VELOCITY = 0x02,
 
     // Driver -> host heartbeat, every 100 ms (not sent while a driver is

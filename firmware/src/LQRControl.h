@@ -43,6 +43,8 @@ struct ControlSample {
     uint8_t source;       // DriveInput::Source in bits 0-3, module id in bits 4-7
     uint8_t lifted;       // lifted/slipping wheel: 0 none, 1 left, 2 right (liftDetect)
     float holdScale;      // 0-1: how much of the K0/K3 terms was used (balancePriority)
+    float iqL, iqR;       // [A] measured q currents from the drivers (NAN = not reported)
+    float idL, idR;       // [A] measured d currents
 
     // Position & heading hold (0 unless balancing).
     float posErr;         // [rad] wheel angle minus its reference (clamped)
