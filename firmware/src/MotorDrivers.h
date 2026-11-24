@@ -47,6 +47,9 @@ struct DriverConfigView {
     uint8_t imageKB;
     bool    modelKnown;      // CMD_GET_BOARD_INFO model name read (protocol 4+)
     char    model[31];       // e.g. "BLDC-Driver v0.2"
+    bool    serialKnown;     // CMD_GET_BOARD_INFO pages 6-7 (protocol 7): MCU unique ID
+    char    serial[25];      // 24 hex digits
+    uint8_t serialPages;     // bit 0 = page 6, bit 1 = page 7 received
     bool    activeKnown;    // settings in use
     uint8_t node;           // node ID (protocol 2 firmware: 1 = left, 2 = right)
     uint8_t flags;          // CFG_FLAG_*
@@ -57,6 +60,17 @@ struct DriverConfigView {
     bool    loopKnown;      // current loop read (protocol 5+)
     float   curP, curI, curTf; // in use: V/A, V/(A s), s
     float   focHz;          // FOC loop rate, 0 = not running / unknown
+    // Anti-cogging (protocol 7, firmware 1.7+), from CMD_COGGING replies.
+    bool    cogKnown;
+    uint8_t cogState;       // COG_STATE_*
+    uint8_t cogDetail;      // progress % (or the failure code in COG_STATE_FAILED)
+    uint8_t cogFlags;       // COG_FLAG_*
+    uint16_t cogAmpMa;      // table peak-to-peak
+    uint16_t cogFricMa;     // friction measured with it
+    bool    cogResultKnown;
+    uint8_t cogCoverage, cogQuality; // %
+    uint8_t cogMaxErr;      // largest position error in the last calibration, 0.1 mrad (255 = more)
+    uint8_t cogNoise;       // noise the last calibration left out of the table, 0.5 mA (0 = none since boot)
     char    result[72];     // outcome of the last operation, "" = none
 };
 
@@ -71,7 +85,37 @@ enum class DriverOp : uint8_t {
     Recalibrate,  // clear + save, let it align on the next start, store + save
     SetNodeId,    // value = new node ID: set + save (driver reboots), then use it
     CurrentLoop,  // both drivers: current loop P/I/filter, applied at once, unsaved (requestCurrentLoop)
+    Cogging,      // both drivers: anti-cogging (requestCogging)
+    CogRead,      // both drivers: read the anti-cogging tables (requestCogTableRead)
 };
+
+// Anti-cogging on BOTH drivers (protocol 7, firmware 1.7+; see the driver's
+// docs/firmware.md#anti-cogging-firmware-17).
+enum class CogAction : uint8_t {
+    Calibrate, // measure (~55 s): robot lying down, wheels free; the controller sends 0 A meanwhile
+    Refine,    // measure again with the table applied
+    Abort,     // stop a calibration (allowed while one runs)
+    Clear,     // forget the tables (pending until Save)
+    CompOn,    // compensation on / slots only / off: applies at once (also while balancing), kept by Save
+    CompSlots, // (slots only: without the lowest 1-3 per turn harmonics, see the driver's docs)
+    CompOff,
+};
+// Returns nullptr if started, otherwise why not.
+const char *requestCogging(CogAction a);
+// True while a calibration runs on the drivers: the balance controller then
+// sends 0 A (a current command would abort it) and won't self-right or spin.
+bool driverCalibrating();
+
+// Reads both drivers' anti-cogging tables (CMD_COGGING read, ~1 s), for the
+// Drivers tab's chart and /cogging.csv. Returns nullptr if started.
+const char *requestCogTableRead();
+// After a read: whether a driver's table arrived (false: none, or not read).
+bool cogTableReady(MotorSide side);
+// Its value at a bin [A], 0..DRIVER_COG_BINS-1 (bin b = raw encoder angle
+// 360 * b / DRIVER_COG_BINS degrees and up).
+float cogTableAmps(MotorSide side, int bin);
+// Incremented each time a read finishes.
+uint32_t cogTablesVersion();
 
 DriverConfigView getDriverConfig(MotorSide side);
 // Incremented whenever a driver's details or an operation's state change.

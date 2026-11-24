@@ -223,11 +223,41 @@ bool needsRefresh[2] = { false, false };
 volatile uint8_t loopErrors[2] = { 0, 0 };
 uint8_t sentInterval[2] = { 0, 0 };
 
-enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode, CurrentLoop };
+enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode, CurrentLoop, Cogging, CogRead };
 enum class Step : uint8_t { Send, WaitReply, WaitInfo, WaitBoard,
                             RecalWaitClear, RecalWaitSave1, RecalWaitAligned, RecalWaitStore,
                             RecalWaitSave2, RecalWaitRunning,
-                            NodeWaitSet, NodeWaitSave, LoopWait };
+                            NodeWaitSet, NodeWaitSave, LoopWait, CogWait, CogRun,
+                            ReadInfo, ReadBins, ReadWait };
+
+// Anti-cogging calibration: how long both drivers may take (the driver's
+// sweep is ~52 s at its default speed), and how often they're polled.
+constexpr uint32_t COG_CAL_TIMEOUT_MS = 150000;
+constexpr uint32_t COG_POLL_MS = 500;
+volatile bool cogAbortRequested = false;
+volatile bool cogCalibrating = false;
+
+// Anti-cogging tables read from the drivers (requestCogTableRead). Frames of
+// 4 bins; cogGot marks which frames arrived.
+constexpr int COG_FRAMES = DRIVER_COG_BINS / 4;
+int8_t cogTab[2][DRIVER_COG_BINS];
+volatile float cogScale[2] = { 0, 0 };     // A per count, 0 = no table
+volatile bool cogInfoSeen[2] = { false, false };
+volatile uint32_t cogGot[2][(COG_FRAMES + 31) / 32];
+bool cogReady[2] = { false, false };
+std::atomic<uint32_t> cogTabVersion{0};
+uint16_t cogReadNext = 0;   // next frame to request in this round
+uint8_t cogReadRound = 0;
+constexpr int COG_READ_BURST = 4;          // requests per driver per supervisor pass (5 ms apart while reading)
+constexpr uint8_t COG_READ_ROUNDS = 4;     // first pass + re-requests of missing frames
+
+bool cogFrameGot(int s, int f) { return cogGot[s][f >> 5] & (1u << (f & 31)); }
+int cogFramesGot(int s) { int n = 0; for (int f = 0; f < COG_FRAMES; f++) n += cogFrameGot(s, f); return n; }
+void send(MotorSide side, std::initializer_list<uint8_t> bytes);
+void requestCogFrame(int s, int f) {
+    const uint16_t bin = (uint16_t)(f * 4);
+    send((MotorSide)s, { CMD_COGGING, COG_OP_READ, (uint8_t)(bin >> 8), (uint8_t)bin });
+}
 
 struct JobState {
     Job job = Job::None;
@@ -300,6 +330,24 @@ void sendParamQueries(MotorSide side) {
         send(side, { CMD_GET_PARAM, p });
 }
 
+// Anti-cogging status and last result (protocol 7+).
+void sendCogQueries(MotorSide side) {
+    send(side, { CMD_COGGING, COG_OP_STATUS });
+    send(side, { CMD_COGGING, COG_OP_RESULT });
+}
+
+const char *cogFailureText(uint8_t code) {
+    switch (code) {
+        case 1: return "FOC stopped";
+        case 2: return "a current command arrived";
+        case 3: return "the wheel didn't follow (blocked?)";
+        case 4: return "aborted";
+        case 5: return "angles missed";
+        case 6: return "no table to refine";
+    }
+    return "?";
+}
+
 // Model name pages 1-5 (protocol 4+). The replies carry their page number, so
 // they can all be sent at once; the driver answers them in order.
 void sendBoardInfoQueries(MotorSide side) {
@@ -313,6 +361,7 @@ const char *statusText(uint8_t st) {
         case CONFIG_ERR_BAD_VALUE:   return "value out of range";
         case CONFIG_ERR_NOT_ALIGNED: return "no alignment to store (motor not running)";
         case CONFIG_ERR_FLASH:       return "firmware too big - settings page in use";
+        case CONFIG_ERR_NOT_RUNNING: return "the motor isn't running";
     }
     return "unknown status";
 }
@@ -376,6 +425,11 @@ void runJob(uint32_t now) {
                 markSent(sd, now);
                 sendBoardInfoQueries(sd);
                 if (cfg[sd].protocol >= 5) sendParamQueries(sd);
+                if (cfg[sd].protocol >= 7) {
+                    sendCogQueries(sd);
+                    send(sd, { CMD_GET_BOARD_INFO, 6 }); // serial number
+                    send(sd, { CMD_GET_BOARD_INFO, 7 });
+                }
                 job.step = Step::WaitBoard;
             } else {
                 endJob();
@@ -411,6 +465,7 @@ void runJob(uint32_t now) {
                 send(sd, { CMD_GET_CONFIG, 0 });
                 send(sd, { CMD_GET_CONFIG, 1 });
                 if (cfg[sd].protocol >= 5) sendParamQueries(sd); // a revert also restores the current loop
+                if (cfg[sd].protocol >= 7) sendCogQueries(sd);   // ... and the anti-cogging table
             }
             endJob();
         } else if (inStep > REPLY_TIMEOUT_MS) {
@@ -523,8 +578,163 @@ void runJob(uint32_t now) {
                 else if (loopErrors[s]) setResult(ms, "Current loop: rejected (value out of range?)");
                 else                   setResult(ms, "Current loop applied - Save & reboot to keep it");
                 send(ms, { CMD_GET_CONFIG, 0 }); // the unsaved flag
+                send(ms, { CMD_GET_CONFIG, 1 });
                 sendParamQueries(ms);
             }
+            endJob();
+        }
+        break;
+    }
+
+    case Job::Cogging: {
+        // Both drivers. job.value = CogAction.
+        const CogAction a = (CogAction)lroundf(job.value);
+        const bool measuring = a == CogAction::Calibrate || a == CogAction::Refine;
+        if (job.step == Step::Send) {
+            for (int s = 0; s < 2; s++) {
+                const MotorSide ms = (MotorSide)s;
+                job.seqAtSend[s] = lastReply[s].seq;
+                switch (a) {
+                    case CogAction::Calibrate: send(ms, { CMD_COGGING, COG_OP_CALIBRATE }); break;
+                    case CogAction::Refine:    send(ms, { CMD_COGGING, COG_OP_REFINE }); break;
+                    case CogAction::Abort:     send(ms, { CMD_COGGING, COG_OP_ABORT }); break;
+                    case CogAction::Clear:     send(ms, { CMD_COGGING, COG_OP_CLEAR }); break;
+                    case CogAction::CompOn:    sendSetParam(ms, PARAM_COG_COMP, 1); break;
+                    case CogAction::CompSlots: sendSetParam(ms, PARAM_COG_COMP, 2); break;
+                    case CogAction::CompOff:   sendSetParam(ms, PARAM_COG_COMP, 0); break;
+                }
+            }
+            if (measuring) cogCalibrating = true; // from now on the controller sends 0 A
+            job.stepStartMs = now;
+            job.step = Step::CogWait;
+        } else if (job.step == Step::CogWait) {
+            bool all = true;
+            for (int s = 0; s < 2; s++) all &= lastReply[s].seq != job.seqAtSend[s];
+            if (!all && inStep <= REPLY_TIMEOUT_MS) break;
+            bool ok = true;
+            for (int s = 0; s < 2; s++) {
+                const MotorSide ms = (MotorSide)s;
+                const bool answered = lastReply[s].seq != job.seqAtSend[s];
+                const uint8_t st = lastReply[s].cmd == CMD_NACK ? CONFIG_ERR_UNKNOWN : lastReply[s].status;
+                if (!answered)            { setResult(ms, "Anti-cogging: no reply"); ok = false; }
+                else if (st != CONFIG_OK) { setResult(ms, "Anti-cogging: %s", statusText(st)); ok = false; }
+                else if (!measuring)      setResult(ms, a == CogAction::Abort ? "Anti-cogging: stopped"
+                                                    : a == CogAction::Clear ? "Anti-cogging table cleared - Save & reboot to keep that"
+                                                    : "Anti-cogging compensation %s - Save & reboot to keep it",
+                                                    a == CogAction::CompOn ? "on" : a == CogAction::CompSlots ? "slots only" : "off");
+                send(ms, { CMD_GET_CONFIG, 0 });
+                send(ms, { CMD_GET_CONFIG, 1 }); // (the page shows the pending copy's unsaved flag)
+                sendCogQueries(ms);
+            }
+            if (measuring && ok) {
+                job.step = Step::CogRun;
+                job.stepStartMs = now;
+                job.seqAtSend[0] = now; // reused: last poll time
+                setJobText("Anti-cogging: measuring both wheels (keep them free)");
+            } else {
+                if (measuring) {
+                    // One started, the other didn't: stop the one that did.
+                    for (int s = 0; s < 2; s++) send((MotorSide)s, { CMD_COGGING, COG_OP_ABORT });
+                }
+                cogCalibrating = false;
+                endJob();
+            }
+        } else { // CogRun: poll both until neither is calibrating
+            const DriverConfigView l = getDriverConfig(MOTOR_LEFT), r = getDriverConfig(MOTOR_RIGHT);
+            auto running = [](const DriverConfigView &c) {
+                return c.cogState == COG_STATE_SETTLING || c.cogState == COG_STATE_FORWARD || c.cogState == COG_STATE_BACKWARD;
+            };
+            const bool fresh = (now - job.stepStartMs) > 1000; // replies to the polls since the start
+            if (cogAbortRequested) {
+                cogAbortRequested = false;
+                for (int s = 0; s < 2; s++) send((MotorSide)s, { CMD_COGGING, COG_OP_ABORT });
+            }
+            const bool lost = linkOf(drivers[0], now) != MotorLink::Running || linkOf(drivers[1], now) != MotorLink::Running;
+            if (fresh && !running(l) && !running(r)) {
+                for (int s = 0; s < 2; s++) {
+                    const DriverConfigView &c = s ? r : l;
+                    if (c.cogState == COG_STATE_DONE)
+                        setResult((MotorSide)s, "Anti-cogging measured: %u mA peak-to-peak - turn it on, then Save & reboot to keep it",
+                                  c.cogAmpMa);
+                    else
+                        setResult((MotorSide)s, "Anti-cogging calibration failed: %s",
+                                  c.cogState == COG_STATE_FAILED ? cogFailureText(c.cogDetail) : "?");
+                    sendCogQueries((MotorSide)s);
+                    send((MotorSide)s, { CMD_GET_CONFIG, 0 });
+                    send((MotorSide)s, { CMD_GET_CONFIG, 1 });
+                }
+                cogCalibrating = false;
+                endJob();
+            } else if (inStep > COG_CAL_TIMEOUT_MS || lost) {
+                for (int s = 0; s < 2; s++) {
+                    send((MotorSide)s, { CMD_COGGING, COG_OP_ABORT });
+                    setResult((MotorSide)s, lost ? "Anti-cogging calibration stopped: a driver stopped running"
+                                                 : "Anti-cogging calibration timed out");
+                }
+                cogCalibrating = false;
+                endJob();
+            } else if (now - job.seqAtSend[0] >= COG_POLL_MS) {
+                job.seqAtSend[0] = now;
+                for (int s = 0; s < 2; s++) send((MotorSide)s, { CMD_COGGING, COG_OP_STATUS });
+                char t[64];
+                snprintf(t, sizeof(t), "Anti-cogging: measuring (left %u%%, right %u%%) - keep the wheels free",
+                         running(l) || l.cogState == COG_STATE_DONE ? l.cogDetail : 0,
+                         running(r) || r.cogState == COG_STATE_DONE ? r.cogDetail : 0);
+                setJobText(t);
+            }
+        }
+        break;
+    }
+
+    case Job::CogRead: {
+        if (job.step == Step::Send) {
+            for (int s = 0; s < 2; s++) {
+                cogInfoSeen[s] = false;
+                cogScale[s] = 0;
+                cogReady[s] = false;
+                for (auto &w : cogGot[s]) w = 0;
+                send((MotorSide)s, { CMD_COGGING, COG_OP_INFO });
+            }
+            job.stepStartMs = now;
+            job.step = Step::ReadInfo;
+        } else if (job.step == Step::ReadInfo) {
+            if ((cogInfoSeen[0] && cogInfoSeen[1]) || inStep > REPLY_TIMEOUT_MS) {
+                cogReadNext = 0;
+                cogReadRound = 0;
+                job.step = Step::ReadBins;
+                job.stepStartMs = now;
+            }
+        } else if (job.step == Step::ReadBins) {
+            // A burst per pass: the next COG_READ_BURST frames that either
+            // driver (with a table) still lacks; re-request rounds skip the
+            // frames already received.
+            int burst = 0;
+            while (cogReadNext < COG_FRAMES && burst < COG_READ_BURST) {
+                bool asked = false;
+                for (int s = 0; s < 2; s++) {
+                    if (cogScale[s] > 0 && !cogFrameGot(s, cogReadNext)) { requestCogFrame(s, cogReadNext); asked = true; }
+                }
+                cogReadNext++;
+                if (asked) burst++;
+            }
+            if (cogReadNext >= COG_FRAMES) { job.step = Step::ReadWait; job.stepStartMs = now; }
+        } else { // ReadWait: let the last replies arrive, then another round for any missing
+            if (inStep < 60) break;
+            bool missing = false;
+            for (int s = 0; s < 2; s++) if (cogScale[s] > 0 && cogFramesGot(s) < COG_FRAMES) missing = true;
+            if (missing && ++cogReadRound < COG_READ_ROUNDS) {
+                cogReadNext = 0;
+                job.step = Step::ReadBins;
+                break;
+            }
+            for (int s = 0; s < 2; s++) {
+                const int got = cogFramesGot(s);
+                cogReady[s] = cogScale[s] > 0 && got == COG_FRAMES;
+                if (!cogInfoSeen[s])        setResult((MotorSide)s, "Anti-cogging table: no reply (firmware too old?)");
+                else if (!(cogScale[s] > 0)) setResult((MotorSide)s, "Anti-cogging table: this driver has none");
+                else if (!cogReady[s])      setResult((MotorSide)s, "Anti-cogging table: only %d of %d parts arrived", got, COG_FRAMES);
+            }
+            cogTabVersion++;
             endJob();
         }
         break;
@@ -622,6 +832,18 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
             break;
         case CMD_GET_BOARD_INFO:
             // Pages 1-5: 6 characters each of the model name, NUL-padded.
+            if (len >= 8 && (d[1] == 6 || d[1] == 7)) {
+                // Serial number (MCU unique ID), 6 bytes per page.
+                static const char hex[] = "0123456789ABCDEF";
+                const uint8_t at = (d[1] - 6) * 12;
+                for (uint8_t i = 0; i < 6; i++) {
+                    c.serial[at + 2 * i]     = hex[d[2 + i] >> 4];
+                    c.serial[at + 2 * i + 1] = hex[d[2 + i] & 15];
+                }
+                c.serial[24] = 0;
+                c.serialPages |= d[1] == 6 ? 1 : 2;
+                c.serialKnown = c.serialPages == 3;
+            }
             if (len >= 8 && d[1] >= 1 && d[1] <= 5) {
                 const uint8_t at = (d[1] - 1) * 6;
                 bool end = false;
@@ -652,6 +874,41 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
                 }
             }
             break;
+        case CMD_COGGING:
+            if (len >= 8 && d[1] == COG_OP_READ) {
+                if (d[2] != 0xFF) {
+                    const int bin = (d[2] << 8) | d[3];
+                    if (bin >= 0 && bin + 3 < DRIVER_COG_BINS && (bin & 3) == 0) {
+                        for (int i = 0; i < 4; i++) cogTab[side][bin + i] = (int8_t)d[4 + i];
+                        cogGot[side][(bin / 4) >> 5] |= 1u << ((bin / 4) & 31);
+                    }
+                }
+                break;
+            }
+            if (len >= 8 && d[1] == COG_OP_INFO) {
+                float sc;
+                const uint32_t bits = ((uint32_t)d[3] << 24) | ((uint32_t)d[4] << 16) | ((uint32_t)d[5] << 8) | d[6];
+                memcpy(&sc, &bits, 4);
+                cogScale[side] = (d[2] == CONFIG_OK && d[7] * 16 == DRIVER_COG_BINS && sc > 0) ? sc : 0.0f;
+                cogInfoSeen[side] = true;
+                break;
+            }
+            if (len >= 8 && d[2] == CONFIG_OK) {
+                if (d[1] == COG_OP_RESULT) {
+                    c.cogResultKnown = true;
+                    c.cogCoverage = d[3]; c.cogQuality = d[4]; c.cogMaxErr = d[5]; c.cogNoise = d[6];
+                } else {
+                    c.cogKnown = true;
+                    c.cogState = d[3]; c.cogDetail = d[4]; c.cogFlags = d[5];
+                    c.cogAmpMa = d[6] * 4; c.cogFricMa = d[7] * 2;
+                }
+            } else if (len >= 8 && d[1] != COG_OP_RESULT) {
+                // Refused (e.g. not running): the status bytes still describe it.
+                c.cogKnown = true;
+                c.cogState = d[3]; c.cogDetail = d[4]; c.cogFlags = d[5];
+                c.cogAmpMa = d[6] * 4; c.cogFricMa = d[7] * 2;
+            }
+            break;
         case CMD_GET_CONFIG:
             if (len >= 8) {
                 float angle;
@@ -668,7 +925,7 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
     lastReply[side].cmd = d[0];
     lastReply[side].arg = d[1];
     lastReply[side].status = ((d[0] == CMD_SET_PARAM || d[0] == CMD_GET_PARAM) && len >= 3) ? d[2]
-                           : (d[0] == CMD_CALIBRATION && len >= 3) ? d[2]
+                           : ((d[0] == CMD_CALIBRATION || d[0] == CMD_COGGING) && len >= 3) ? d[2]
                            : (d[0] == CMD_NACK) ? CONFIG_ERR_UNKNOWN
                            : d[1];
     lastReply[side].seq = lastReply[side].seq + 1;
@@ -698,12 +955,18 @@ static const char *opName(DriverOp op) {
         case DriverOp::Recalibrate: return "Re-run alignment";
         case DriverOp::SetNodeId:   return "Change node ID";
         case DriverOp::CurrentLoop: return "Current loop";
+        case DriverOp::Cogging:     return "Anti-cogging";
+        case DriverOp::CogRead:     return "Read anti-cogging tables";
     }
     return "?";
 }
 
 static const char *startJob(Job j, MotorSide side, DriverOp op, float value, float value2 = 0, float value3 = 0) {
-    if (op != DriverOp::Refresh && balanceState == BalanceState::Balancing)
+    // (Anti-cogging on/off is allowed while balancing: it applies at once,
+    // like the current loop, and comparing with/without is the point.)
+    const bool cogToggle = op == DriverOp::Cogging && (value == (float)CogAction::CompOn || value == (float)CogAction::CompOff
+                                                       || value == (float)CogAction::CompSlots);
+    if (op != DriverOp::Refresh && !cogToggle && balanceState == BalanceState::Balancing)
         return "Not while it's balancing - pause it or lay it down first";
     if (op != DriverOp::Refresh && !cfg[side].infoKnown)
         return "This driver hasn't answered yet (firmware 1.1 or later is needed for settings over CAN)";
@@ -718,7 +981,7 @@ static const char *startJob(Job j, MotorSide side, DriverOp op, float value, flo
         job.step = Step::Send;
         job.stepStartMs = millis();
         job.sawRestart = false;
-        if (j == Job::CurrentLoop) snprintf(job.text, sizeof(job.text), "%s (both drivers)", opName(op));
+        if (j == Job::CurrentLoop || j == Job::Cogging || j == Job::CogRead) snprintf(job.text, sizeof(job.text), "%s (both drivers)", opName(op));
         else snprintf(job.text, sizeof(job.text), "%s (%s)", opName(op), kSideName[side]);
         job.job = j; // last: the supervisor starts on this
     }
@@ -757,6 +1020,48 @@ const char *requestCurrentLoop(float p, float i, float tf) {
     }
     return startJob(Job::CurrentLoop, MOTOR_LEFT, DriverOp::CurrentLoop, p, i, tf);
 }
+
+const char *requestCogging(CogAction a) {
+    if (a == CogAction::Abort) {
+        if (job.job == Job::Cogging && job.step == Step::CogRun) { cogAbortRequested = true; return nullptr; }
+        // Not ours (e.g. started over USB): ask the drivers anyway.
+        for (int s = 0; s < 2; s++) send((MotorSide)s, { CMD_COGGING, COG_OP_ABORT });
+        return nullptr;
+    }
+    for (int s = 0; s < 2; s++) {
+        if (!cfg[s].infoKnown || cfg[s].protocol < 7) return "Both drivers need firmware 1.7 or later for anti-cogging";
+        if (linkOf(drivers[s], millis()) == MotorLink::Offline) return "A driver is offline";
+    }
+    if (a == CogAction::Calibrate || a == CogAction::Refine) {
+        if (balanceState != BalanceState::Tipped)
+            return "Lay the robot down first (past the cut-out angle), with both wheels free to turn";
+        if (!motorsReady()) return "Both motors must be running";
+        if (a == CogAction::Refine) {
+            for (int s = 0; s < 2; s++)
+                if (!(cfg[s].cogFlags & COG_FLAG_TABLE) || (cfg[s].cogFlags & COG_FLAG_MISMATCH))
+                    return "Refine needs a table on both drivers - calibrate first";
+        }
+    }
+    return startJob(Job::Cogging, MOTOR_LEFT, DriverOp::Cogging, (float)a);
+}
+
+bool driverCalibrating() { return cogCalibrating; }
+
+const char *requestCogTableRead() {
+    for (int s = 0; s < 2; s++) {
+        if (!cfg[s].infoKnown || cfg[s].protocol < 7) return "Both drivers need firmware 1.7 or later for anti-cogging";
+        if (linkOf(drivers[s], millis()) == MotorLink::Offline) return "A driver is offline";
+    }
+    // (startJob refuses while balancing: the read adds ~3000 frames a second to the bus.)
+    return startJob(Job::CogRead, MOTOR_LEFT, DriverOp::CogRead, 0);
+}
+
+bool cogTableReady(MotorSide side) { return cogReady[side]; }
+float cogTableAmps(MotorSide side, int bin) {
+    if (!cogReady[side] || bin < 0 || bin >= DRIVER_COG_BINS) return 0;
+    return cogTab[side][bin] * cogScale[side];
+}
+uint32_t cogTablesVersion() { return cogTabVersion; }
 
 const char *requestDriverNodes(uint8_t l, uint8_t r) {
     if (balanceState == BalanceState::Balancing) return "Not while it's balancing - pause it or lay it down first";
@@ -839,6 +1144,7 @@ void Task_motorSupervisor(void *pvParams) {
         if (job.job == Job::None) serviceNodeMapping();
         serviceTelemetryRate(now);
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        // Faster while reading the anti-cogging tables (a burst per pass).
+        vTaskDelay(pdMS_TO_TICKS(job.job == Job::CogRead ? 5 : 100));
     }
 }

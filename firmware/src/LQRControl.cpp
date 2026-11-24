@@ -114,6 +114,7 @@ constexpr uint32_t IMU_SAMPLE_TIMEOUT_MS = 10;
 } // namespace
 
 const char *requestSpinTest(float amps, uint32_t phaseMs) {
+  if (driverCalibrating()) return "Not during the anti-cogging calibration";
   if (balanceState != BalanceState::Tipped)
     return "Lay the robot down first (past the cut-out angle), with its wheels free to turn";
   if (!(amps > 0) || amps > 0.5f) return "Test current must be 0-0.5 A";
@@ -137,6 +138,7 @@ const char *requestSelfRight(bool *stopping) {
     return nullptr;
   }
   if (selfRightMode == 0) return "Self-righting is off (Tune tab: Self-righting)";
+  if (driverCalibrating()) return "Not during the anti-cogging calibration";
   if (balanceState != BalanceState::Tipped) return "It can only right itself while lying down (past the cut-out angle)";
   srStartRequested = true;
   return nullptr;
@@ -522,7 +524,7 @@ void Task_LQR(void *pvParam) {
       // -srDir x the rocking current (flipped by srInvert).
       {
         const bool tippedNow = (balanceState == BalanceState::Tipped);
-        const bool srOk = motorsOk && batteryOk && !paused && !spinTesting;
+        const bool srOk = motorsOk && batteryOk && !paused && !spinTesting && !driverCalibrating(); // (not during an anti-cogging calibration)
         const float tiltDeg = theta[2] * kRadToDeg;
         const float fromSpDeg = (theta[2] - setPoint) * kRadToDeg;
         const float handoverDeg = fminf(selfRightHandover, deactivationAngle - 2.0f);
@@ -727,6 +729,14 @@ void Task_LQR(void *pvParam) {
       else if (learnTrim && nowStepMs - stillSinceMs >= TRIM_SETTLE_MS) {
         setPointTrim = constrain(setPointTrim + (theta[2] - setPoint) * (dt / TRIM_TAU_S),
                                  -TRIM_LIMIT_RAD, TRIM_LIMIT_RAD);
+      }
+
+      // During the drivers' anti-cogging calibration they turn the wheels
+      // themselves, and any current command would abort it.
+      if (driverCalibrating()) {
+        leftTargetCurrent = 0;
+        rightTargetCurrent = 0;
+        spinTesting = false;
       }
 
       // Send straight away (previously a separate 500 Hz task sent whatever
