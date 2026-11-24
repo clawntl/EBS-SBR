@@ -8,6 +8,7 @@
 namespace DriveInput {
 
 bool modulesAllowed = true;
+bool carSteerReverse = true;
 
 namespace {
 
@@ -82,6 +83,8 @@ Demand current() {
             }
         }
     }
+    if (carSteerReverse && (d.source == Source::Web || d.source == Source::Gamepad) && d.speed < -ACTIVE_THRESHOLD)
+        d.turn = -d.turn;
     used = d;
     portEXIT_CRITICAL(&lock);
 

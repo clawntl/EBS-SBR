@@ -78,6 +78,7 @@ void sendInfo(AsyncWebSocketClient *client) {
     // Same as on the printed QR sign; anyone seeing this page has joined already.
     doc["apPassword"] = WifiManager::apPassword();
     doc["build"] = __DATE__ " " __TIME__;
+    doc["fw"] = FIRMWARE_VERSION;
     doc["psram"] = ESP.getPsramSize();
     sendJson(doc, client);
 }
@@ -209,6 +210,13 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
             p["cal"] = (c.pendFlags & CFG_FLAG_CALIBRATION) != 0;
             o["unsaved"] = (c.pendFlags & CFG_FLAG_UNSAVED) != 0;
         }
+        if (c.loopKnown) {
+            JsonObject l = o["loop"].to<JsonObject>();
+            l["p"] = c.curP;
+            l["i"] = c.curI;
+            l["tf"] = c.curTf;
+            l["hz"] = c.focHz;
+        }
         o["calUsed"] = (m.flags & DRIVER_FLAG_CALIBRATION_USED) != 0;
         o["result"] = c.result;
     }
@@ -260,6 +268,9 @@ void broadcastTelemetry() {
     doc["lqr"] = r3(c.lqr);
     doc["cl"] = r3(c.curL);
     doc["cr"] = r3(c.curR);
+    // Measured q currents (driver firmware 1.6+); absent = not reported.
+    if (isfinite(c.iqL)) doc["ml"] = r3(c.iqL);
+    if (isfinite(c.iqR)) doc["mr"] = r3(c.iqR);
     doc["jx"] = r2(c.joyX);
     doc["jy"] = r2(c.joyY);
     doc["perr"] = r3(c.posErr);
@@ -297,6 +308,10 @@ void broadcastTelemetry() {
         d["link"] = motorLinkName(m.link);
         d["flags"] = m.flags;
         d["tries"] = m.startAttempts;
+        // Measured currents, as above (q and d).
+        const float iq = s == 0 ? c.iqL : c.iqR, id = s == 0 ? c.idL : c.idR;
+        if (isfinite(iq)) d["iq"] = r3(iq);
+        if (isfinite(id)) d["id"] = r3(id);
         if (m.lastError) {
             d["err"] = driverErrorName(m.lastError);
             d["errAge"] = m.lastErrorAgeMs / 1000;
@@ -359,6 +374,9 @@ void handleMessage(const uint8_t *data, size_t len) {
             err = requestSwapDriverSides();
         } else if (!strcmp(op, "nodes")) {
             err = requestDriverNodes(doc["left"] | 0, doc["right"] | 0);
+        } else if (!strcmp(op, "currentLoop")) {
+            // Both drivers; tf arrives in seconds.
+            err = requestCurrentLoop(doc["p"] | -1.0f, doc["i"] | -1.0f, doc["tf"] | -1.0f);
         } else if (side == 0 || side == 1) {
             const MotorSide sd = (MotorSide)side;
             const float v = doc["value"] | 0.0f;
@@ -376,6 +394,14 @@ void handleMessage(const uint8_t *data, size_t len) {
     } else if (!strcmp(cmd, "spinTest")) {
         const char *err = requestSpinTest(doc["amps"] | 0.1f, doc["ms"] | 200);
         sendNotice(err ? err : "Spin test running - recording", !err);
+    } else if (!strcmp(cmd, "selfRight")) {
+        bool stopping = false;
+        const char *err = requestSelfRight(&stopping);
+        if (!err) DeviceLog::printf("[web] self-righting %s\n", stopping ? "stop" : "start");
+        sendNotice(err ? err : stopping ? "Stopping self-righting" : "Self-righting", !err);
+    } else if (!strcmp(cmd, "selfRightPush")) {
+        const char *err = requestSelfRightPush(doc["ms"] | 150);
+        sendNotice(err ? err : "Push test - recording", !err);
     } else if (!strcmp(cmd, "recSecs")) {
         // Saved on its own (not part of Save to flash), unless balancing:
         // a flash write briefly stalls the control loop.
@@ -640,6 +666,7 @@ void networkTask(void *) {
         runPendingActions();
         Battery::update(Settings::value("battCutoff"));
         serviceSetPointTrim();
+        serviceSelfRight();
 
         if (ws.count()) {
             const uint32_t telemetryMs = (uint32_t)Settings::value("telemetryMs");

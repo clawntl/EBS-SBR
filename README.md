@@ -142,7 +142,7 @@ The controller board accepts commands at 115200 baud, one per line:
 |--------------|--------------------------------------------------|
 | `SP <deg>`   | Balance angle set point (degrees from upright)   |
 | `DA <deg>`   | Tilt angle at which the motors are deactivated   |
-| `K0`-`K5 <value>` | LQR gains (only K1, K3 and K4 are used at the moment) |
+| `K0`-`K5 <value>` | LQR gains: K0 wheel position, K1 tilt, K2 heading, K3 wheel speed, K4 tilt rate, K5 yaw rate |
 | `CA <value>` | Complementary filter coefficient                 |
 | `SET <key> <value>` | Any setting by its key                    |
 | `LIST`       | All settings with their current values           |
@@ -152,12 +152,17 @@ The controller board accepts commands at 115200 baud, one per line:
 
 Changes made over serial show up on the web page too. Without a value, a command prints the current one. Default values, ranges and help texts for every setting live in [`firmware/src/Settings.cpp`](firmware/src/Settings.cpp).
 
+## Tuning tools
+
+[`tools/tuning/`](tools/tuning/README.md) has Python tools for working out the balance gains when the robot changes (battery, wheels, motors, payload): a Fusion script to check the CAD's masses, a fit of the motors' torque constant from the Drivers tab's wheel spin test, a gain design from the robot's mass properties, and a summary of a recorded balancing capture (jitter, recovery from pushes, why it fell).
+
 ## Repository layout
 
 ```
 firmware/    Controller board (ESP32-S3) PlatformIO project
 hardware/    Full robot CAD (CAD/EBS-SBR.step). Driver board hardware: see BLDC-Driver
 images/      Renders and photos
+tools/       Wi-Fi QR codes (wifi_qr.py) and the balance tuning tools (tuning/)
 ```
 
 ## License

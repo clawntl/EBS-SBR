@@ -15,6 +15,8 @@
 
 float leftShaftVelocity = 0;
 float rightShaftVelocity = 0;
+float leftMeasuredIq = NAN, leftMeasuredId = NAN;
+float rightMeasuredIq = NAN, rightMeasuredId = NAN;
 
 bool canBusOk = false;
 
@@ -126,8 +128,13 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
         case CMD_SHAFT_VELOCITY: {
             if (rxMsg.len < 5) return;
             const float v = bytes2floatMSB(rxMsg.data + 1);
-            if (side == MOTOR_LEFT) leftShaftVelocity = v;
-            else                    rightShaftVelocity = v;
+            float iq = NAN, id = NAN;
+            if (rxMsg.len >= 8) {
+                iq = (int16_t)((rxMsg.data[5] << 8) | rxMsg.data[6]) / 1000.0f;
+                id = (int8_t)rxMsg.data[7] * (DRIVER_D_CURRENT_LSB_MA / 1000.0f);
+            }
+            if (side == MOTOR_LEFT) { leftShaftVelocity = v;  leftMeasuredIq = iq;  leftMeasuredId = id; }
+            else                    { rightShaftVelocity = v; rightMeasuredIq = iq; rightMeasuredId = id; }
             break;
         }
         case CMD_DRIVER_STATUS: {
@@ -150,6 +157,7 @@ static void handleDriverFrame(MotorSide side, const CANMessage &rxMsg) {
         case CMD_REVERT:
         case CMD_REBOOT:
         case CMD_GET_BOARD_INFO:
+        case CMD_GET_PARAM:
         case CMD_NACK:
             handleDriverConfigReply(side, rxMsg.data, rxMsg.len);
             break;
@@ -184,6 +192,15 @@ static void handleModuleFrame(uint8_t id, const CANMessage &m) {
         turn = maxTurnRate > 0 ? (b / 10.0f) * DEG_TO_RAD / maxTurnRate : 0;
     }
     DriveInput::setModule(id, turn, speed, flags & MODULE_FLAG_DRIVE);
+
+    // Self-right request: when the flag goes from clear to set.
+    static uint8_t lastFlags[16] = {};
+    const bool rising = (flags & MODULE_FLAG_SELF_RIGHT) && !(lastFlags[id & 15] & MODULE_FLAG_SELF_RIGHT);
+    lastFlags[id & 15] = flags;
+    if (rising && DriveInput::modulesAllowed && balanceState != BalanceState::Righting) {
+        const char *err = requestSelfRight();
+        DeviceLog::printf("[can] module %u: self-right %s\n", id, err ? err : "requested");
+    }
 }
 
 static void put16(uint8_t *p, int v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }

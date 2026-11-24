@@ -5,6 +5,10 @@
 // Shaft velocities reported by the motor controllers over CAN.
 extern float leftShaftVelocity;
 extern float rightShaftVelocity;
+// Measured q / d currents [A] the drivers report with the velocity (driver
+// firmware 1.6+; NAN with older firmware). q has the sign of the commands.
+extern float leftMeasuredIq, leftMeasuredId;
+extern float rightMeasuredIq, rightMeasuredId;
 
 // True once initCanBus() succeeded.
 extern bool canBusOk;

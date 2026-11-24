@@ -21,17 +21,17 @@ namespace {
 // the rest are the values that were hard-coded in RobotParams.cpp.
 const ParamDef kParams[] = {
     // ---- Balance gains (LQR) -------------------------------------------------
-    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -25.0f, -30.0f, 30.0f, 0.01f, false,
+    {"K1", "Tilt angle (K1)", "Balance gains (LQR)", -20.0f, -30.0f, 30.0f, 0.01f, false,
      "How hard the wheels push back when the robot leans away from the angle set point: the main "
      "'stiffness'. More negative pushes harder; too much makes it oscillate quickly or buzz, too "
      "little and it can't catch itself.",
      [](float v) { K[1] = v; }, 0},
-    {"K4", "Tilt rate (K4)", "Balance gains (LQR)", -0.6f, -3.0f, 3.0f, 0.001f, false,
+    {"K4", "Tilt rate (K4)", "Balance gains (LQR)", -2.0f, -3.0f, 3.0f, 0.001f, false,
      "Damping: how hard the wheels react to how fast the robot is tipping (the gyro rate). Too "
      "little and it overshoots and wobbles; too much makes it twitchy and noisy, because it "
      "amplifies gyro noise.",
      [](float v) { K[4] = v; }, 0},
-    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.08f, -2.0f, 2.0f, 0.001f, false,
+    {"K3", "Wheel speed (K3)", "Balance gains (LQR)", -0.24f, -2.0f, 2.0f, 0.001f, false,
      "Feedback on the wheels' own speed (the average reported by both motor drivers). Stops the "
      "robot rolling away at a steady speed; too much fights the balancing and makes it slow and "
      "swaying.",
@@ -86,9 +86,81 @@ const ParamDef kParams[] = {
      "Applies immediately. The period is a whole number of milliseconds, so some rates round "
      "(e.g. 300 Hz runs at 333 Hz); the Tune tab shows the real loop rate.",
      [](float v) { IMUsampleRate = (uint16_t)lroundf(v); }, 0},
+    {"balPriority", "Balance first at the current limit (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "After a hard push the tilt terms (K1, K4) and the position/speed terms (K0, K3) can ask for "
+     "current in opposite directions, and their sum can push the wrong way just as the motors run "
+     "out of current: after a hard push the spinning wheels can make the speed term ask for 10 A "
+     "or more. With this on, the position/speed terms are limited to 1.5x the total current limit "
+     "(both wheels), so once the tilt terms ask for more, catching the fall comes first and getting "
+     "back to its spot second. Ordinary pushes and driving rarely reach the limit.",
+     [](float v) { balancePriority = v > 0.5f; }, 0},
+    {"liftDetect", "Lifted wheel detection (0/1)", "Balance", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Going over a bump, one wheel can leave the ground and spin up, which makes the robot think "
+     "it's rolling fast and react wrongly. With this on, when the two wheels' speeds differ by "
+     "more than turning explains (Lift threshold), the controller uses the slower, grounded "
+     "wheel's speed until they agree again. Uses the wheel radius and track below.",
+     [](float v) { liftDetect = v > 0.5f; }, 0},
+    {"liftSpeed", "Lift threshold (rad/s)", "Balance", 8.0f, 3.0f, 50.0f, 0.5f, false,
+     "How far the wheels' speed difference may be from what the measured turn rate explains "
+     "before a wheel counts as lifted or slipping. Normal driving and turning stay within about "
+     "2-5 rad/s; a wheel off the ground passes 30 rad/s within 50 ms.",
+     [](float v) { liftSpeed = v; }, 0},
+    {"wheelDia", "Wheel diameter (mm)", "Balance", 60.0f, 20.0f, 300.0f, 0.5f, false,
+     "Outside diameter of the tyres. Used by Lifted wheel detection to work out how much the "
+     "wheel speeds should differ in a turn.",
+     [](float v) { wheelRadius = v / 2000.0f; }, 0},
+    {"trackWidth", "Track width (mm)", "Balance", 110.0f, 30.0f, 500.0f, 0.5f, false,
+     "Distance between the two tyres' centre lines. Used by Lifted wheel detection.",
+     [](float v) { trackWidth = v / 1000.0f; }, 0},
+
+    // ---- Self-righting ------------------------------------------------------------
+    {"selfRight", "Self-righting (0 off, 1 on request, 2 auto)", "Self-righting", 1.0f, 0.0f, 2.0f, 1.0f, false,
+     "Getting up after a fall. Lying on its hoops the wheels are in the air, so it spins them back and forth as "
+     "reaction wheels to rock itself on the hoop, a bit higher each swing, until the wheels touch the ground; then "
+     "the balance controller drives it up the rest of the way. 1: on request only (the Self-right button on the "
+     "Control tab, X on the Xbox controller, or a CAN module). 2: also by itself, once it has been lying still for "
+     "the delay below. Pause or press the button again to stop it.",
+     [](float v) { selfRightMode = (uint8_t)lroundf(v); }, 0},
+    {"srCurrent", "Rocking current (A per wheel)", "Self-righting", 1.5f, 0.3f, 2.0f, 0.05f, false,
+     "Current used to spin the wheels while rocking. More rocks it up in fewer swings; in the model even 1 A gets "
+     "it up. The drivers only deliver it while the wheels are slow: the motor's own back-voltage leaves less and "
+     "less current as they speed up (none at all by about 140 rad/s with driver firmware 1.4, about 165 rad/s with "
+     "1.5 on a typical battery).",
+     [](float v) { selfRightCurrent = v; }, 0},
+    {"srWheelCap", "Rocking wheel speed cap (rad/s)", "Self-righting", 200.0f, 50.0f, 400.0f, 10.0f, false,
+     "While rocking, stop pushing in the direction the wheels are already spinning this fast. Lower is quieter and "
+     "gentler but takes more swings (in the model 150-200 rad/s costs nothing; 100 takes about twice as long). "
+     "The motors can't spin the wheels much past about 140 rad/s anyway (driver firmware 1.4), or 140-185 rad/s "
+     "with firmware 1.5 depending on the battery, so this only matters if set lower.",
+     [](float v) { selfRightWheelCap = v; }, 0},
+    {"srHandover", "Handover angle (deg)", "Self-righting", 34.0f, 10.0f, 40.0f, 1.0f, false,
+     "Once it has rocked to within this angle of the set point (moving towards upright) the balance controller "
+     "takes over. The wheels touch the ground at about 36 degrees, so just inside that. Always at least 2 degrees "
+     "inside the cut-out angle.",
+     [](float v) { selfRightHandover = v; }, 0},
+    {"srTimeout", "Time per attempt (s)", "Self-righting", 6.0f, 2.0f, 20.0f, 0.5f, false,
+     "If it hasn't got up in this time it stops, lets the rocking die down and tries again. The model needs about "
+     "1.5 s (3 swings).",
+     [](float v) { selfRightTimeout = v; }, 0},
+    {"srTries", "Attempts", "Self-righting", 3.0f, 1.0f, 10.0f, 1.0f, false,
+     "How many times to try per request before giving up. An attempt also counts as failed if it falls over again "
+     "within 2 s of the balance controller taking over.",
+     [](float v) { selfRightTries = (uint8_t)lroundf(v); }, 0},
+    {"srDelay", "Automatic start delay (s)", "Self-righting", 2.0f, 0.5f, 30.0f, 0.5f, false,
+     "With automatic self-righting (2), how long it must lie still before it starts. After giving up it waits "
+     "until it has been moved (stood up or turned over) before trying by itself again.",
+     [](float v) { selfRightDelay = v; }, 0},
+    {"srInvert", "Flip rocking direction (0/1)", "Self-righting", 0.0f, 0.0f, 1.0f, 1.0f, false,
+     "The first push should rock it towards upright. If the push test (Drivers tab) rocks it further over "
+     "instead, set this to 1.",
+     [](float v) { selfRightInvert = v > 0.5f; }, 0},
+    {"srRecord", "Record self-righting (0/1)", "Self-righting", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "Start a recording each time it self-rights (if none is running), long enough for one attempt plus a few "
+     "seconds. Download it from Record on the Tune tab.",
+     [](float v) { selfRightRecord = v > 0.5f; }, 0},
 
     // ---- Position & heading hold ---------------------------------------------------
-    {"K0", "Wheel position (K0)", "Position & heading hold", -0.05f, -2.0f, 2.0f, 0.001f, false,
+    {"K0", "Wheel position (K0)", "Position & heading hold", -0.23f, -2.0f, 2.0f, 0.001f, false,
      "Holds the robot's position: current per radian of wheel rotation away from where it should "
      "be (where it started balancing, moved along by the drive input). Same sign as K3. 0 = off "
      "(it then only resists speed, so it creeps). Start small (e.g. -0.005) and increase until it "
@@ -111,7 +183,7 @@ const ParamDef kParams[] = {
      "the joystick and watch 'Yaw rate' on the chart. It should go positive; if it goes negative "
      "set this to 1. With it wrong the heading hold makes the robot spin.",
      [](float v) { yawInvert = v > 0.5f; }, 0},
-    {"maxPosErr", "Max position error (rad)", "Position & heading hold", 10.0f, 0.5f, 100.0f, 0.5f, false,
+    {"maxPosErr", "Max position error (rad)", "Position & heading hold", 2.0f, 0.5f, 100.0f, 0.5f, false,
      "The most wheel rotation (rad) the position hold acts on. If the robot is pushed further than "
      "this the target moves with it, so it doesn't run back hard. One wheel revolution is 6.28 "
      "rad.",
@@ -130,6 +202,12 @@ const ParamDef kParams[] = {
      "How quickly the requested speed may change. Lower is gentler starts and stops; very high "
      "makes it lurch (it has to roll backwards briefly to lean into a start).",
      [](float v) { maxWheelAccel = v; }, 0},
+    {"speedLead", "Max speed lead (wheel rad/s)", "Driving", 8.0f, 0.0f, 50.0f, 0.5f, false,
+     "How far the requested speed may run ahead of the wheels' actual speed while speeding up. On "
+     "rough ground the robot can't keep up with the ramp; without a limit the growing speed error "
+     "makes it lean further and further forward until a bump tips it over. With a limit the "
+     "request waits for the wheels. No effect where the wheels keep up. 0 = no limit.",
+     [](float v) { maxSpeedLead = v; }, 0},
     {"maxTurn", "Turn rate (deg/s)", "Driving", 120.0f, 0.0f, 360.0f, 5.0f, false,
      "Turn rate requested at full left/right.",
      [](float v) { maxTurnRate = v * DEG_TO_RAD; }, 0},
@@ -138,6 +216,12 @@ const ParamDef kParams[] = {
      "joystick and the Xbox controller always take over while their stick is off-centre; a module "
      "drives when neither is in use. See docs/can-modules.md for the CAN frames.",
      [](float v) { DriveInput::modulesAllowed = v > 0.5f; }, 0},
+    {"revSteer", "Car-style steering in reverse (0/1)", "Driving", 1.0f, 0.0f, 1.0f, 1.0f, false,
+     "1: when driving backwards with the joystick or the Xbox controller, left/right work like reversing a car: "
+     "right swings the back of the robot to the right (it turns anticlockwise seen from above). 0: right always "
+     "turns it clockwise, so in reverse it heads off to the left. CAN modules always give a turn rate and aren't "
+     "affected.",
+     [](float v) { DriveInput::carSteerReverse = v > 0.5f; }, 0},
     {"turnGain", "Turn feed-forward (A)", "Driving", 0.1f, 0.0f, 1.0f, 0.01f, false,
      "Differential current added straight away at full left/right (taken from one wheel, added "
      "to the other), so turns start without waiting for the turn-rate error to build. The "
@@ -150,7 +234,7 @@ const ParamDef kParams[] = {
      "Pair an Xbox controller directly with the robot (Control tab). Off disconnects the controller "
      "and stops all Bluetooth radio use, leaving the radio to Wi-Fi (applies straight away).",
      [](float v) { Gamepad::enabled = v > 0.5f; }, 0},
-    {"gpLayout", "Stick layout (0/1)", "Xbox controller", 0.0f, 0.0f, 1.0f, 1.0f, false,
+    {"gpLayout", "Stick layout (0/1)", "Xbox controller", 1.0f, 0.0f, 1.0f, 1.0f, false,
      "0: left stick does both (forward/back and turning). 1: left stick forward/back, right stick "
      "turning, like an RC car.",
      [](float v) { Gamepad::layout = v > 0.5f ? 1 : 0; }, 0},
@@ -183,7 +267,7 @@ const ParamDef kParams[] = {
      "Length of a recording: the Record panel's choice, also used by the Xbox controller's Y button.",
      [](float) {}, PARAM_FLAG_HIDDEN},
     {"recEvery", "Record every Nth step", "System", 1.0f, 1.0f, 20.0f, 1.0f, false,
-     "Recordings normally keep every control step (up to about 60 s at 500 Hz, 30 s at 1000 Hz). "
+     "Recordings normally keep every control step (up to about 50 s at 500 Hz, 25 s at 1000 Hz). "
      "2 keeps every other step and doubles the longest recording, and so on. Applies to the next "
      "recording.",
      [](float) {}, 0},

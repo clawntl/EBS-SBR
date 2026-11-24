@@ -30,7 +30,7 @@ The web page shows who is driving ("Driving from" on the Control tab). Recording
 |---|---|
 | 0–1 | Speed: int16, **0.01 rad/s of wheel speed**, + = forward |
 | 2–3 | Turn rate: int16, **0.1 deg/s**, + = turning right (clockwise seen from above) |
-| 4 | Flags: bit 0 = **drive** (asking to drive), bit 1 = **fraction** (see below) |
+| 4 | Flags: bit 0 = **drive** (asking to drive), bit 1 = **fraction** (see below), bit 2 = **self-right** (see below) |
 | 5 | Sequence counter (optional, not checked) |
 
 - **Send at least every 250 ms while driving.** 20–50 Hz is typical. If the frames stop, the robot stops being driven by this module within 250 ms.
@@ -40,13 +40,18 @@ The web page shows who is driving ("Driving from" on the Control tab). Recording
 
 Wheel speed is the motors' shaft speed. Ground speed = wheel speed × wheel radius.
 
+**Self-right flag:** when bit 2 changes from clear to set, the robot starts self-righting. Rocking itself up from lying on its hoop is described in `self-righting.md`.
+- It only starts if the robot is lying down (state 3) and the **Self-righting** setting is on.
+- While it's self-righting (state 8), the request is ignored, so holding the bit set doesn't stop it.
+- To ask again, clear the bit first.
+
 ## Robot → modules
 
 ### State, ID `0x180`, every 20 ms
 
 | Byte | Content |
 |---|---|
-| 0 | Balance state: 0 = motors not ready, 1 = IMU stalled, 2 = paused, 3 = tipped / lying down, 4 = battery low, 5 = **balancing**, 6 = waiting to be stood up, 7 = stopped (wheels ran away) |
+| 0 | Balance state: 0 = motors not ready, 1 = IMU stalled, 2 = paused, 3 = tipped / lying down, 4 = battery low, 5 = **balancing**, 6 = waiting to be stood up, 7 = stopped (wheels ran away), 8 = self-righting |
 | 1 | Who's driving: bits 0–3 = 0 none, 1 web page, 2 Xbox controller, 3 module; bits 4–7 = the module number |
 | 2–3 | Tilt from the set point: int16, 0.01°. Same sign as the web page's "Tilt from set point" |
 | 4–5 | Wheel speed: int16, 0.01 rad/s, + = forward |
@@ -85,7 +90,7 @@ import time
 import can
 
 MODULE = 0                      # 0-15
-DRIVE, FRACTION = 0x01, 0x02
+DRIVE, FRACTION, SELF_RIGHT = 0x01, 0x02, 0x04
 
 bus = can.Bus(interface="socketcan", channel="can0")  # ip link set can0 up type can bitrate 1000000
 

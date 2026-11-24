@@ -1,0 +1,53 @@
+{
+  "name": "EBS-SBR",
+  "_note": "Lengths in m, masses in kg, inertias in kg m^2 unless the key says otherwise. See README.md for where each number comes from.",
+
+  "mass_total_kg": 0.765,
+  "wheel_radius_m": 0.030,
+  "track_m": 0.110,
+
+  "rotating_per_side": {
+    "_note": "Everything that spins with ONE wheel: wheel, tyre, screws and the motor's rotor (bell + magnets). Inertia about the axle.",
+    "mass_kg": 0.04482,
+    "inertia_kgm2": 1.441e-5
+  },
+
+  "cad": {
+    "_note": "Fusion Properties of the whole robot (wheels included), origin on the axle centre. Used when 'body' below is null.",
+    "mass_g": 788.056,
+    "com_height_mm": 55.622,
+    "inertia_axle_gmm2": 4701000
+  },
+
+  "body": {
+    "_note": "Or give the body (everything except the rotating parts) directly: CoM height above the axle and pitch inertia about its own CoM. null = work it out from 'cad'.",
+    "com_height_m": null,
+    "inertia_cm_kgm2": null
+  },
+
+  "motor": {
+    "_note": "kt and friction from fit_spin.py. Resistance PER PHASE: the GM3506 datasheet's 5.6 ohm is line-to-line, so 2.8 (confirmed by capture-304: free wheels top out at ~137 rad/s).",
+    "kt_nm_per_a": 0.054,
+    "resistance_ohm": 2.8,
+    "friction_nm": 0.003
+  },
+
+  "current_loop": {
+    "_note": "The motor drivers' current loop (Drivers tab, BLDC-Driver firmware 1.4+) and how much voltage they can put on the motor (sbr_model.q_voltage_limit). Firmware 1.5+: modulation svpwm, voltage_limit_v 12 (MOTOR_VOLTAGE_LIMIT), max_duty 0.92. Firmware 1.4 and older: modulation sine, voltage_limit_v 10. supply_v: the battery (3S Li-ion: 12.6 full, ~11.1 typical, 9.6 at the cutoff).",
+    "p": 3,
+    "i": 3000,
+    "modulation": "svpwm",
+    "voltage_limit_v": 12,
+    "max_duty": 0.92,
+    "supply_v": 11.1
+  },
+
+  "control": {
+    "_note": "rate_hz = imuRate setting; max_current_a = maxCurrent setting. The wheel speed filter is the drivers' velocity filter (5 ms) plus telemetry timing.",
+    "rate_hz": 500,
+    "delay_steps": 1,
+    "wheel_speed_filter_s": 0.012,
+    "max_current_a": 1.5,
+    "balance_priority": true
+  }
+}

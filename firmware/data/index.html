@@ -236,6 +236,23 @@
   #modal .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; max-width: 420px; }
   #modal p { margin: 0 0 14px; line-height: 1.45; }
   #modal .actions { justify-content: flex-end; }
+  /* Import dialog */
+  .modalwrap {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    align-items: center; justify-content: center; padding: 20px; z-index: 10;
+  }
+  .modalwrap.show { display: flex; }
+  .modalwrap .box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+                    max-width: 680px; width: 100%; max-height: 88vh; overflow: auto; }
+  .modalwrap h2 { margin-top: 0; }
+  .modalwrap h3 { font-size: 0.95rem; margin: 14px 0 6px; }
+  .modalwrap .actions { justify-content: flex-end; margin-top: 12px; }
+  .modalwrap label.chk { display: block; margin: 8px 0; }
+  .imp-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  .imp-table td { padding: 3px 6px; border-top: 1px solid var(--border); vertical-align: top; }
+  .imp-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .imp-table .key { color: var(--muted); font-size: 0.75rem; }
+  .imp-list { font-size: 0.82rem; line-height: 1.5; }
 
   /* Log + toast */
   #log {
@@ -348,11 +365,16 @@
           <button id="saveBtn" class="primary" disabled>Save to flash</button>
           <button id="loadBtn" disabled>Revert to saved</button>
           <button id="defaultsBtn" disabled>Factory defaults</button>
+          <button id="exportBtn" disabled>Export to file</button>
+          <button id="importBtn" disabled>Import from file...</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
         </div>
         <p class="muted">Changes apply immediately but are lost on restart until saved. Saving stalls the
           controller for a moment (flash writes pause both CPU cores), so the robot may twitch - best done while
           it's paused or lying down. Press <b>?</b> next to any setting for an explanation; double-click a label
-          to reset just that setting.</p>
+          to reset just that setting. <b>Export</b> saves every setting to a file (e.g. before trying something, or
+          to copy a tune to another robot); <b>Import</b> shows what a file would change and lets you pick, before
+          anything is applied.</p>
       </div>
     </div>
 
@@ -373,7 +395,8 @@
           <div class="tile"><div class="k">Wheel speed</div><div class="v" id="cWheel">-</div></div>
           <div class="tile wide"><div class="k">Driving from</div><div class="v" id="cSrc">-</div></div>
         </div>
-        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button></div>
+        <div style="margin-top:12px"><button id="pauseBtn2" class="big" disabled>Pause</button>
+          <button id="selfRightBtn" class="big" style="margin-top:8px" disabled title="Lying on its hoop: rock itself up and start balancing (X on the Xbox controller)">Self-right</button></div>
       </div>
       <div>
         <div class="panel">
@@ -436,6 +459,23 @@
       </div>
     </div>
     <div class="panel">
+      <h2>Current loop (both drivers)</h2>
+      <div class="actions">
+        <label>P <input id="curP" type="number" class="inline" min="0" max="50" step="0.5" style="width:5em"> V/A</label>
+        <label>I <input id="curI" type="number" class="inline" min="0" max="100000" step="100" style="width:6em"> V/(A&middot;s)</label>
+        <label>Filter <input id="curTf" type="number" class="inline" min="0" max="10" step="0.05" style="width:5em"> ms</label>
+        <button id="curApply">Apply to both</button>
+        <button id="curDefaults">Defaults</button>
+      </div>
+      <p class="muted" id="curNote"></p>
+      <p class="muted">The drivers' current (torque) controller: how quickly the motor current follows what the
+        balance controller asks for. It applies at once; press <b>Save &amp; reboot</b> on each driver to keep it
+        (<b>Revert</b> goes back to the saved values). The defaults (P 3, I 300, filter 0.53 ms) are slow on these
+        gimbal motors (2.8 &Omega; per phase): about 20 ms to follow a step. Raising <b>I</b> is the main way to speed it
+        up: roughly (2.8 + P) / I seconds, so I = 1500 gives about 4 ms and 3000 about 2 ms. Too much P can make the motor
+        whine or buzz. Re-run the spin test after a change. Needs driver firmware 1.4.</p>
+    </div>
+    <div class="panel">
       <h2>Wheel spin test (for tuning)</h2>
       <div class="actions">
         <label>Current <input id="spinAmps" type="number" class="inline" value="0.1" min="0.02" max="0.5" step="0.02" style="width:5em"> A</label>
@@ -446,6 +486,17 @@
         model needs). Lay the robot down so both wheels turn freely, then run it: both wheels get the current forwards,
         nothing, backwards, nothing, one step each, and it's recorded - download the CSV from Record on the Tune tab.
         Start small: 0.1 A for 200 ms spins a free wheel up to a few tens of rad/s.</p>
+    </div>
+    <div class="panel">
+      <h2>Self-righting push test</h2>
+      <div class="actions">
+        <label>Push <input id="srPushMs" type="number" class="inline" value="150" min="50" max="500" step="10" style="width:5em"> ms</label>
+        <button id="srPushBtn" disabled>Push once</button>
+      </div>
+      <p class="muted">Checks the rocking direction before the robot first rights itself. Lay it on its hoop, then push:
+        both wheels get the rocking current (Tune tab: Self-righting) for this long, in the direction that should rock
+        it <b>towards upright</b>, and it's recorded. If it rocks further over instead, set <b>Flip rocking
+        direction</b> to 1. Pausing stops it.</p>
     </div>
     <div class="panel">
       <h2>About</h2>
@@ -586,6 +637,18 @@
   </section>
 
   <div id="toast"></div>
+  <div id="importModal" class="modalwrap" role="dialog" aria-modal="true" aria-labelledby="impTitle">
+    <div class="box wide">
+      <h2 id="impTitle">Import settings</h2>
+      <p id="impSource" class="muted"></p>
+      <p id="impWarn" class="warn-text" hidden></p>
+      <label id="impTrimRow" class="chk" hidden><input type="checkbox" id="impTrim"> <span id="impTrimText"></span></label>
+      <div id="impBody"></div>
+      <label class="chk"><input type="checkbox" id="impSave"> Save to flash afterwards (otherwise press <b>Save to
+        flash</b> later, or <b>Revert to saved</b> to undo)</label>
+      <div class="actions"><button id="impCancel">Cancel</button><button id="impOk" class="primary">Import</button></div>
+    </div>
+  </div>
   <div id="modal" role="dialog" aria-modal="true">
     <div class="box">
       <p id="modalText"></p>
@@ -723,7 +786,7 @@ function setConnected(on, text) {
   $("dot").classList.toggle("connected", on);
   $("statusText").textContent = text;
   for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
-                    "wifiAddBtn", "capBtn", "apOnly"]) $(id).disabled = !on;
+                    "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn", "exportBtn", "importBtn"]) $(id).disabled = !on;
   $("joystickPad").classList.toggle("disabled", !on);
   if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
 }
@@ -797,7 +860,12 @@ let schemaKey = "";
 let activeKey = null;     // control being edited: ignore remote updates for it
 let dirty = false;
 
+let schemaList = [];       // every parameter, hidden ones included (for export / import)
+let settingValues = {};    // latest values from the robot
+let fwVersion = "", buildDate = "";
+
 function buildSettings(list) {
+  schemaList = list;
   const key = list.map(p => p.key).join(",");
   if (key === schemaKey) return; // unchanged (reconnect)
   schemaKey = key;
@@ -976,6 +1044,176 @@ function applySettings(values) {
 }
 $("capSecs").onchange = () => send({ cmd: "recSecs", value: Number($("capSecs").value) });
 
+// ---------------------------------------------------------------------
+// Settings export / import (a JSON file, handled entirely in the page)
+// ---------------------------------------------------------------------
+const SETTINGS_FILE_TYPE = "ebs-sbr-settings";
+
+function downloadText(text, filename, type) {
+  const blob = new Blob([text], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+$("exportBtn").onclick = () => {
+  if (!schemaList.length) { toast("No settings received from the robot yet", false); return; }
+  const settings = {};
+  for (const p of schemaList) if (Number.isFinite(settingValues[p.key])) settings[p.key] = settingValues[p.key];
+  const now = new Date();
+  const file = {
+    type: SETTINGS_FILE_TYPE, format: 1,
+    robot: robotName, firmware: fwVersion, build: buildDate,
+    exported: now.toISOString(),
+    unsaved: dirty,   // true: some values were changed but not saved to flash on the robot
+    settings,
+  };
+  const stamp = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  downloadText(JSON.stringify(file, null, 2) + "\n", `${robotName || "robot"}-settings-${stamp}.json`, "application/json");
+  log(`Exported ${Object.keys(settings).length} settings` + (dirty ? " (including unsaved changes)" : ""));
+};
+
+$("importBtn").onclick = () => { $("importFile").value = ""; $("importFile").click(); };
+$("importFile").onchange = async () => {
+  const f = $("importFile").files[0];
+  if (!f) return;
+  let data;
+  try { data = JSON.parse(await f.text()); } catch (e) { toast("That file isn't valid JSON", false); return; }
+  if (!data || data.type !== SETTINGS_FILE_TYPE || typeof data.settings !== "object" || data.settings === null) {
+    toast("That isn't a settings file exported from this robot's web page", false);
+    return;
+  }
+  if (!schemaList.length) { toast("No settings received from the robot yet", false); return; }
+  showImport(data, f.name);
+};
+
+function fmtValue(p, v) {
+  return p ? Number(v).toFixed(decimals(p.step)) : String(v);
+}
+
+function showImport(data, filename) {
+  const byKey = Object.fromEntries(schemaList.map(p => [p.key, p]));
+  const changes = [], same = [], unknown = [], invalid = [], untouched = [];
+  for (const [key, raw] of Object.entries(data.settings)) {
+    const p = byKey[key];
+    if (!p) { unknown.push(key); continue; }
+    const v = Number(raw);
+    if (raw === null || raw === "" || !Number.isFinite(v)) { invalid.push(key); continue; }
+    const target = Math.min(p.max, Math.max(p.min, v));
+    const cur = settingValues[key];
+    if (Number.isFinite(cur) && Math.abs(target - cur) <= p.step / 2) { same.push(p); continue; }
+    changes.push({ p, from: cur, to: target, clamped: target !== v, raw: v });
+  }
+  for (const p of schemaList) if (!(p.key in data.settings)) untouched.push(p);
+
+  // Where the file came from, and whether the firmware matches.
+  const when = data.exported ? new Date(data.exported).toLocaleString() : "an unknown date";
+  $("impSource").textContent = `${filename}: exported from ${data.robot || "a robot"} on ${when}` +
+    (data.firmware ? `, firmware ${data.firmware}` : "") + (data.build ? ` (built ${data.build})` : "") + "." +
+    (data.unsaved ? " Some of its values hadn't been saved to flash on that robot." : "");
+  const warn = $("impWarn");
+  const fwDiffers = !data.firmware || !fwVersion || data.firmware !== fwVersion;
+  if (fwDiffers) {
+    warn.textContent = `This file is from ${data.firmware ? "firmware " + data.firmware : "firmware without a version number"}` +
+      ` but this robot runs ${fwVersion ? "firmware " + fwVersion : "firmware without a version number"}. ` +
+      "Settings may have been added, removed, or changed meaning since. Only settings with the same names can be " +
+      "imported; check the list below before going ahead.";
+  }
+  warn.hidden = !fwDiffers;
+
+  // The learned set point trim belongs to one robot's IMU mounting: off by default.
+  const trim = changes.find(c => c.p.key === "spTrim");
+  $("impTrimRow").hidden = !trim;
+  $("impTrim").checked = false;
+  if (trim) $("impTrimText").textContent =
+    `Also use the file's learned set point trim (${fmtValue(trim.p, trim.to)}° instead of ${fmtValue(trim.p, trim.from)}°). ` +
+    "Normally left off: the trim is learned for one robot's IMU mounting and weight distribution.";
+
+  const body = $("impBody");
+  body.textContent = "";
+  const h = (text) => { const e = document.createElement("h3"); e.textContent = text; body.appendChild(e); return e; };
+  const para = (text, cls = "imp-list") => { const e = document.createElement("p"); e.className = cls; e.textContent = text; body.appendChild(e); return e; };
+  const name = (p) => `${p.label} (${p.key})`;
+  const boxes = [];
+
+  h(changes.length ? `Will change (${changes.length})` : "Nothing to change: every matching setting already has the file's value");
+  if (changes.length) {
+    const t = document.createElement("table");
+    t.className = "imp-table";
+    for (const c of changes) {
+      const tr = t.insertRow();
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      // Off by default: the trim (see above) and the settings not shown on the
+      // Tune tab, some of which belong to this robot's hardware (node IDs).
+      cb.checked = c.p.key !== "spTrim" && !c.p.hidden;
+      cb.dataset.key = c.p.key;
+      cb.dataset.value = c.to;
+      boxes.push(cb);
+      tr.insertCell().appendChild(cb);
+      const td = tr.insertCell();
+      td.textContent = c.p.label;
+      const k = document.createElement("div");
+      k.className = "key";
+      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs, set on the Drivers tab), so off by default" : "") +
+        (c.clamped ? ` - the file's ${c.raw} is outside ${c.p.min} to ${c.p.max}, so limited` : "");
+      td.appendChild(k);
+      tr.insertCell().className = "num";
+      tr.cells[2].textContent = Number.isFinite(c.from) ? fmtValue(c.p, c.from) : "-";
+      tr.insertCell().textContent = "→";
+      tr.insertCell().className = "num";
+      tr.cells[4].textContent = fmtValue(c.p, c.to);
+      cb.onchange = () => { if (c.p.key === "spTrim") $("impTrim").checked = cb.checked; updateOk(); };
+    }
+    body.appendChild(t);
+  }
+  $("impTrim").onchange = () => {
+    const cb = boxes.find(b => b.dataset.key === "spTrim");
+    if (cb) cb.checked = $("impTrim").checked;
+    updateOk();
+  };
+  if (same.length) {
+    h(`Already the same (${same.length})`);
+    para(same.map(name).join(", "));
+  }
+  if (unknown.length || invalid.length) {
+    h(`In the file but not on this robot - ignored (${unknown.length + invalid.length})`);
+    para(unknown.join(", ") + (invalid.length ? (unknown.length ? "; " : "") + "not a number: " + invalid.join(", ") : ""));
+  }
+  if (untouched.length) {
+    h(`On this robot but not in the file - left as they are (${untouched.length})`);
+    para(untouched.map(p => `${name(p)} = ${fmtValue(p, settingValues[p.key])}`).join(", "));
+  }
+
+  const ok = $("impOk");
+  function updateOk() {
+    const n = boxes.filter(b => b.checked).length;
+    ok.textContent = (fwDiffers ? "Import anyway" : "Import") + (n ? ` (${n})` : "");
+    ok.disabled = n === 0;
+  }
+  updateOk();
+  $("impSave").checked = false;
+
+  const m = $("importModal");
+  const close = () => { m.classList.remove("show"); ok.onclick = $("impCancel").onclick = null; };
+  $("impCancel").onclick = close;
+  ok.onclick = () => {
+    const chosen = boxes.filter(b => b.checked);
+    for (const b of chosen) send({ cmd: "set", key: b.dataset.key, value: Number(b.dataset.value) });
+    const save = $("impSave").checked;
+    if (save) send({ cmd: "save" });
+    log(`Imported ${chosen.length} setting(s) from ${filename}: ` + chosen.map(b => `${b.dataset.key}=${b.dataset.value}`).join(", ") +
+        (save ? "; saved to flash" : " (not saved yet)"));
+    toast(`Imported ${chosen.length} setting(s)` + (save ? " and saved" : " - not saved to flash yet"));
+    close();
+  };
+  m.classList.add("show");
+}
+
+
+
 function updateSaveButton() {
   const btn = $("saveBtn");
   btn.textContent = dirty ? "Save to flash *" : "Saved";
@@ -1002,6 +1240,7 @@ function togglePause() {
 $("pauseBtn").onclick = togglePause;
 $("pauseBtn2").onclick = togglePause;
 $("retryBtn").onclick = () => { send({ cmd: "motorRetry" }); log("Retry motor start"); };
+$("selfRightBtn").onclick = () => send({ cmd: "selfRight" });
 
 function setTile(id, text, cls = "") {
   const el = $(id);
@@ -1013,15 +1252,18 @@ const STATE_TEXT = {
   "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
   "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
   "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
+  "righting": "self-righting",
 };
 const STATE_CLASS = {
-  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad",
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn",
 };
 const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
 
 function driverText(d, volts, detailed) {
   const parts = [d.link];
   if (volts > 0) parts.push(volts.toFixed(2) + " V");
+  if (detailed && Number.isFinite(d.iq))
+    parts.push(`measured q ${d.iq >= 0 ? "+" : ""}${d.iq.toFixed(2)} A, d ${d.id >= 0 ? "+" : ""}${(d.id ?? 0).toFixed(2)} A`);
   const flags = DRV_FLAGS.filter(([bit, name]) => (d.flags & bit) && (detailed || bit !== 2 && bit !== 4)).map(([, n]) => n);
   if (flags.length) parts.push(flags.join(", "));
   if (d.err) parts.push(`last error: ${d.err} (${d.errAge} s ago)`);
@@ -1087,6 +1329,13 @@ function showTelemetry(t) {
   const gaveUp = t.drv.some(d => d.link === "FAILED");
   if ($("retryBtn").hidden !== !gaveUp) $("retryBtn").hidden = !gaveUp;
 
+  {
+    const righting = t.state === "righting";
+    const btn = $("selfRightBtn");
+    setText(btn, righting ? "Stop self-righting" : "Self-right");
+    setClass(btn, righting ? "big danger" : "big");
+  }
+
   pausedNow = t.paused;
   for (const id of ["pauseBtn", "pauseBtn2"]) {
     const btn = $(id);
@@ -1109,7 +1358,7 @@ function showTelemetry(t) {
 // ---------------------------------------------------------------------
 const hist = (() => {
   const RAW_MS = 60000, BUCKET_MS = 1000, BUCKETS_MS = 3600000;
-  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "batt", "battL", "battR",
+  const keys = ["dev", "rate", "wheel", "lqr", "cl", "cr", "ml", "mr", "batt", "battL", "battR",
                 "yaw", "yref", "hdg", "herr", "perr", "vref", "ycur",
                 "pitch", "gx", "gy", "gz", "ax", "ay", "az"];
   let raw = [], buckets = [], cur = null, head = 0;
@@ -1370,6 +1619,8 @@ charts.make({
     { key: "wheel", label: "Wheel speed (rad/s)",      colour: "#c77dff", on: false },
     { key: "cl",    label: "Left current (A ×10)",     colour: "#f06292", on: false, scale: 10 },
     { key: "cr",    label: "Right current (A ×10)",    colour: "#4dd0e1", on: false, scale: 10 },
+    { key: "ml",    label: "Left measured (A ×10)",    colour: "#ad1457", on: false, scale: 10 },
+    { key: "mr",    label: "Right measured (A ×10)",   colour: "#00838f", on: false, scale: 10 },
     { key: "vref",  label: "Speed set point (rad/s)",  colour: "#e0c35a", on: false },
     { key: "perr",  label: "Position error (rad)",     colour: "#a1887f", on: false },
     { key: "yaw",   label: "Yaw rate (°/s ÷10)",       colour: "#ff6b6b", on: false, scale: 0.1 },
@@ -1796,6 +2047,9 @@ function renderDrivers(m) {
       rows.push(["Alignment", calNow + (p && p.cal !== a.cal ? (p.cal ? " \u2192 new one after save" : " \u2192 cleared after save") : "")
         + (a.cal ? (d.calUsed ? ", used at the last start" : ", not used at the last start") : "")]);
     }
+    if (d.loop) rows.push(["Current loop", `P ${+d.loop.p.toFixed(3)} V/A, I ${+d.loop.i.toFixed(1)} V/(A\u00b7s), ` +
+                                          `filter ${(d.loop.tf * 1000).toFixed(2)} ms` +
+                                          (d.loop.hz > 0 ? ` (FOC loop ${(d.loop.hz / 1000).toFixed(1)} kHz)` : "")]);
     const t = $("drvInfo" + i);
     t.innerHTML = "";
     for (const [k, v] of rows) {
@@ -1865,7 +2119,39 @@ function renderDrivers(m) {
   }
   $("drvLegacy").hidden = !heard.has(0);
   $("drvSwap").disabled = busy || m.balancing;
+  renderCurrentLoop(m, busy);
 }
+
+// Current loop panel: shows the left driver's values until edited.
+let curEdited = false;
+function renderCurrentLoop(m, busy) {
+  const [l, r] = [m.d[0], m.d[1]];
+  const ok = m.d.every((d) => d.known && d.proto >= 5 && d.link !== "OFFLINE");
+  const ids = ["curP", "curI", "curTf"];
+  if (!curEdited && l.loop && !ids.includes(document.activeElement && document.activeElement.id)) {
+    $("curP").value = +l.loop.p.toFixed(3);
+    $("curI").value = +l.loop.i.toFixed(1);
+    $("curTf").value = +(l.loop.tf * 1000).toFixed(3);
+  }
+  for (const id of ids) $(id).disabled = !ok;
+  $("curApply").disabled = !ok || busy || m.balancing;
+  $("curDefaults").disabled = !ok;
+  const same = l.loop && r.loop && l.loop.p === r.loop.p && l.loop.i === r.loop.i && l.loop.tf === r.loop.tf;
+  setText($("curNote"), !ok ? "Both drivers need firmware 1.4 or later (and to be online)."
+    : m.balancing ? "Pause it or lay it down to change the current loop."
+    : (l.loop && r.loop && !same) ? "The two drivers have different values - Apply to both to match them." : "");
+}
+for (const id of ["curP", "curI", "curTf"]) $(id).addEventListener("input", () => { curEdited = true; });
+$("curDefaults").onclick = () => {
+  $("curP").value = 3; $("curI").value = 300; $("curTf").value = 0.53;
+  curEdited = true;
+};
+$("curApply").onclick = () => {
+  const p = Number($("curP").value), i = Number($("curI").value), tfMs = Number($("curTf").value);
+  if (![p, i, tfMs].every(Number.isFinite)) return;
+  curEdited = false;
+  send({ cmd: "driver", op: "currentLoop", p, i, tf: tfMs / 1000 });
+};
 
 function sendDriverNodes() {
   send({ cmd: "driver", op: "nodes", left: +$("drvNodeL").value, right: +$("drvNodeR").value });
@@ -1877,6 +2163,7 @@ document.querySelectorAll("[data-drv]").forEach((b) => {
   b.onclick = () => send({ cmd: "driver", side: +b.dataset.drv, op: b.dataset.op });
 });
 $("spinBtn").onclick = () => send({ cmd: "spinTest", amps: Number($("spinAmps").value), ms: Number($("spinMs").value) });
+$("srPushBtn").onclick = () => send({ cmd: "selfRightPush", ms: Number($("srPushMs").value) });
 $("gpPairBtn").onclick = () => send({ cmd: "gpPair" });
 $("gpForgetBtn").onclick = async () => {
   if (await ask("Forget the paired controller? You'll need to pair it again to use it.", "Forget", true)) send({ cmd: "gpForget" });
@@ -1892,7 +2179,10 @@ const handlers = {
     setText($("iPass"), m.apPassword);
     setText($("iHost"), `http://${m.hostname}.local/`);
     setText($("iSuffix"), m.suffix);
-    $("buildInfo").textContent = `Built ${m.build}.` + (m.psram ? "" : " No PSRAM found: recordings are limited to a few seconds.");
+    fwVersion = m.fw || "";
+    buildDate = m.build || "";
+    $("buildInfo").textContent = (m.fw ? `Version ${m.fw}, built ${m.build}.` : `Built ${m.build}.`) +
+      (m.psram ? "" : " No PSRAM found: recordings are limited to a few seconds.");
   },
   log(m) { deviceLog(m.boot, m.lines); },
   wifi: (m) => renderWifi(m),
@@ -1909,6 +2199,7 @@ const handlers = {
   },
   schema(m) { buildSettings(m.params); },
   settings(m) {
+    settingValues = { ...settingValues, ...m.values };
     applySettings(m.values);
     dirty = m.dirty;
     updateSaveButton();

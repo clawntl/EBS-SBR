@@ -39,6 +39,7 @@ static const uint32_t CAN_RX_FILTER2_MASK = 0x7F0;
 #define MODULE_DRIVE_ID_BASE  0x200
 #define MODULE_FLAG_DRIVE     0x01   // asking to drive (0 = present, not driving)
 #define MODULE_FLAG_FRACTION  0x02   // values are fractions, not units
+#define MODULE_FLAG_SELF_RIGHT 0x04  // set (0 -> 1) = self-right now, if lying down (selfRight setting on)
 // Robot -> modules: state, every 20 ms:
 //   [BalanceState][drive source: DriveInput::Source | module id << 4]
 //   [int16 tilt from set point, 0.01 deg][int16 wheel speed, 0.01 rad/s, + = forward]
@@ -72,8 +73,14 @@ static const uint32_t CAN_RX_FILTER2_MASK = 0x7F0;
 // Standard message command byte
 // Must match include/can_protocol.h in the bldc_driver firmware.
 // ----------------------------------------------
+// Scale of the d current in CMD_SHAFT_VELOCITY (driver D_CURRENT_LSB_MA).
+#define DRIVER_D_CURRENT_LSB_MA 16
+
 enum CAN_CMD : uint8_t {
-    // Driver -> host: [0x02][float rad/s, big-endian]
+    // Driver -> host: [0x02][float rad/s, big-endian], and from driver CAN
+    // protocol 6 (firmware 1.6) [measured q current, int16 mA big-endian]
+    // [measured d current, int8 x DRIVER_D_CURRENT_LSB_MA]. Older drivers
+    // send 5 bytes.
     CMD_SHAFT_VELOCITY = 0x02,
 
     // Driver -> host heartbeat, every 100 ms (not sent while a driver is
@@ -101,6 +108,9 @@ enum CAN_CMD : uint8_t {
     //                 page 1-5: [0x27][page][6 chars of the model name, NUL-padded]
     // The model name (e.g. "BLDC-Driver v0.2") is up to 30 characters.
     CMD_GET_BOARD_INFO = 0x27,
+    // Read a parameter (protocol 5, firmware 1.4+):
+    // [0x28][param] -> [0x28][param][status][f32 value]
+    CMD_GET_PARAM   = 0x28,
     CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
 
     // Driver -> host: [0xFF][float error code (DriverError)]
@@ -111,6 +121,12 @@ enum DriverParam : uint8_t {
     PARAM_NODE_ID = 1,   // saved: 1-15 (protocol 2: 1 = left, 2 = right)
     PARAM_INVERT = 2,    // saved: 0 / 1
     PARAM_VELOCITY_INTERVAL_MS = 0x10, // runtime: velocity telemetry period, 1-100 ms
+    // Current loop tuning (protocol 5): applied at once AND pending (kept by
+    // CMD_SAVE, undone by CMD_REVERT).
+    PARAM_CURRENT_P  = 0x20, // V/A, 0-50 (driver default 3)
+    PARAM_CURRENT_I  = 0x21, // V/(A s), 0-100000 (default 300)
+    PARAM_CURRENT_TF = 0x22, // s, 0-0.01 (default 0.00053)
+    PARAM_FOC_LOOP_HZ = 0x30, // read only: the driver's FOC loop rate
 };
 
 enum DriverCalOp : uint8_t { CAL_STORE = 1, CAL_CLEAR = 2 };

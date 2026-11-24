@@ -23,6 +23,16 @@ extern float deactivationAngle; // Unit: deg
 extern float engageAngle;       // [deg] from the set point, to start balancing
 extern float runawaySpeed;      // [rad/s] wheel speed that stops balancing
 extern float maxWheelCurrent;   // [A] per-wheel current limit (drivers: 2 A)
+// When the motors are at their limit, the tilt terms (K1, K4) get priority
+// over the position/speed terms (K0, K3): see LQRControl.cpp.
+extern bool balancePriority;
+// Lifted / slipping wheel detection: if the two wheels' speeds differ by more
+// than the turning explains (by liftSpeed rad/s), the wheel speed used by the
+// controller comes from the slower (grounded) wheel only.
+extern bool liftDetect;
+extern float liftSpeed;         // [rad/s]
+extern float wheelRadius;       // [m]
+extern float trackWidth;        // [m] tyre centre to centre
 
 extern float alpha; // Complementary filter coefficient
 // IMU sample rate [Hz]. Also the LQR rate and the motor current CAN send
@@ -38,6 +48,7 @@ extern bool paused;
 // the input is released (see LQRControl.cpp).
 extern float maxWheelSpeed;  // [rad/s] wheel speed at full forward/back
 extern float maxWheelAccel;  // [rad/s^2] how fast the speed set point may change
+extern float maxSpeedLead;   // [rad/s] how far the speed set point may run ahead of the wheels (0 = no limit)
 extern float maxTurnRate;    // [rad/s] yaw rate at full left/right
 extern float turnFeedForward; // [A] differential current at full turn (feed-forward)
 extern bool  yawInvert;      // flip the gyro's yaw sign to match the wheels
@@ -46,3 +57,17 @@ extern bool  yawInvert;      // flip the gyro's yaw sign to match the wheels
 // by hand doesn't wind up and lunge back.
 extern float maxPositionError; // [rad] of wheel rotation
 extern float maxHeadingError;  // [rad]
+
+// Self-righting (see LQRControl.cpp and docs/self-righting.md). Lying on
+// its hoops the wheels are in the air, so the wheels are used as reaction
+// wheels to rock the robot on its hoop until the wheels touch the ground,
+// then the balance controller takes over.
+extern uint8_t selfRightMode;     // 0 off, 1 on request (web / Xbox X / CAN), 2 also automatic
+extern float selfRightCurrent;    // [A] per wheel while rocking
+extern float selfRightWheelCap;   // [rad/s] no more push in the direction the wheels already spin this fast
+extern float selfRightHandover;   // [deg] from the set point: hand over to balancing inside this
+extern float selfRightTimeout;    // [s] per attempt
+extern uint8_t selfRightTries;    // attempts per request
+extern float selfRightDelay;      // [s] lying still this long before an automatic start
+extern bool selfRightInvert;      // flip the push direction (if a push test rocks it the wrong way)
+extern bool selfRightRecord;      // record each self-righting

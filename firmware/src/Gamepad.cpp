@@ -148,7 +148,7 @@ void Task_gamepad(void *) {
     uint32_t connectedAtMs = 0;
     bool connParamsAsked = false;
     uint32_t lastNotifyAt = 0, lastNotifySeenMs = 0;
-    bool lastA = false, lastB = false, lastY = false;
+    bool lastA = false, lastB = false, lastX = false, lastY = false;
     Capture::State lastCapture = Capture::state();
     BalanceState lastBalance = balanceState;
 
@@ -274,7 +274,8 @@ void Task_gamepad(void *) {
             portEXIT_CRITICAL(&lock);
             if (changed) ver++;
 
-            // Buttons (on press): B = pause, A = resume, Y = record / stop.
+            // Buttons (on press): B = pause, A = resume, X = self-right / stop,
+            // Y = record / stop.
             if (n.btnB && !lastB && !paused) { paused = true; DeviceLog::println("[gamepad] B: paused"); }
             if (n.btnA && !lastA && paused)  { paused = false; DeviceLog::println("[gamepad] A: resumed"); }
             if (n.btnY && !lastY) {
@@ -292,8 +293,19 @@ void Task_gamepad(void *) {
                     }
                 }
             }
+            if (n.btnX && !lastX) {
+                bool stopping = false;
+                const char *err = requestSelfRight(&stopping);
+                if (err) {
+                    DeviceLog::printf("[gamepad] X: %s\n", err);
+                    buzz(3, 80, 80, 60);
+                } else {
+                    DeviceLog::printf("[gamepad] X: self-righting %s\n", stopping ? "stop" : "start");
+                }
+            }
             lastA = n.btnA;
             lastB = n.btnB;
+            lastX = n.btnX;
             lastY = n.btnY;
 
             // Recording started / finished (from Y or the web page): buzz.
@@ -309,6 +321,7 @@ void Task_gamepad(void *) {
             const BalanceState bs = balanceState;
             if (bs != lastBalance) {
                 if (bs == BalanceState::Balancing) buzz(1, 80, 0, 80);
+                else if (bs == BalanceState::Righting) buzz(2, 60, 60, 50);
                 else if (lastBalance == BalanceState::Balancing &&
                          (bs == BalanceState::Tipped || bs == BalanceState::Runaway)) buzz(1, 500, 0, 80);
                 lastBalance = bs;
@@ -317,7 +330,7 @@ void Task_gamepad(void *) {
             // Battery % (BLE battery service; arrives when it changes).
             if (xbox.getReceiveBatteryAt()) setBattery(xbox.battery);
         } else {
-            lastA = lastB = lastY = false;
+            lastA = lastB = lastX = lastY = false;
             lastCapture = Capture::state();
             lastBalance = balanceState;
             if (pairing) setState(State::Pairing, (uint8_t)((pairUntil - now + 999) / 1000));

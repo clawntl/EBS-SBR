@@ -219,19 +219,22 @@ struct LastReply {
 LastReply lastReply[2];
 
 bool needsRefresh[2] = { false, false };
+// Rejected PARAM_CURRENT_* writes per driver during a CurrentLoop job.
+volatile uint8_t loopErrors[2] = { 0, 0 };
 uint8_t sentInterval[2] = { 0, 0 };
 
-enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode };
+enum class Job : uint8_t { None, Refresh, Simple, Save, Recalibrate, ChangeNode, CurrentLoop };
 enum class Step : uint8_t { Send, WaitReply, WaitInfo, WaitBoard,
                             RecalWaitClear, RecalWaitSave1, RecalWaitAligned, RecalWaitStore,
                             RecalWaitSave2, RecalWaitRunning,
-                            NodeWaitSet, NodeWaitSave };
+                            NodeWaitSet, NodeWaitSave, LoopWait };
 
 struct JobState {
     Job job = Job::None;
     MotorSide side = MOTOR_LEFT;
     DriverOp op = DriverOp::Refresh;
     float value = 0;
+    float value2 = 0, value3 = 0; // CurrentLoop: I and filter (value = P)
     Step step = Step::Send;
     uint32_t stepStartMs = 0;
     uint32_t seqAtSend[2] = { 0, 0 };
@@ -288,6 +291,13 @@ void sendQueries(MotorSide side) {
     send(side, { CMD_GET_INFO });
     send(side, { CMD_GET_CONFIG, 0 });
     send(side, { CMD_GET_CONFIG, 1 });
+}
+
+// Current loop and FOC loop rate (protocol 5+); the replies fill cfg.
+void sendParamQueries(MotorSide side) {
+    for (uint8_t p : { (uint8_t)PARAM_CURRENT_P, (uint8_t)PARAM_CURRENT_I,
+                       (uint8_t)PARAM_CURRENT_TF, (uint8_t)PARAM_FOC_LOOP_HZ })
+        send(side, { CMD_GET_PARAM, p });
 }
 
 // Model name pages 1-5 (protocol 4+). The replies carry their page number, so
@@ -365,6 +375,7 @@ void runJob(uint32_t now) {
             if (cfg[sd].protocol >= 4) {
                 markSent(sd, now);
                 sendBoardInfoQueries(sd);
+                if (cfg[sd].protocol >= 5) sendParamQueries(sd);
                 job.step = Step::WaitBoard;
             } else {
                 endJob();
@@ -396,7 +407,11 @@ void runJob(uint32_t now) {
             const bool restarts = (job.op == DriverOp::Save || job.op == DriverOp::Reboot) && st == CONFIG_OK;
             setResult(sd, "%s: %s%s", job.text, statusText(st), restarts ? " - rebooting" : "");
             if (restarts) forgetSettings(sd);
-            else { send(sd, { CMD_GET_CONFIG, 0 }); send(sd, { CMD_GET_CONFIG, 1 }); }
+            else {
+                send(sd, { CMD_GET_CONFIG, 0 });
+                send(sd, { CMD_GET_CONFIG, 1 });
+                if (cfg[sd].protocol >= 5) sendParamQueries(sd); // a revert also restores the current loop
+            }
             endJob();
         } else if (inStep > REPLY_TIMEOUT_MS) {
             setResult(sd, "%s: no reply", job.text);
@@ -482,6 +497,37 @@ void runJob(uint32_t now) {
             endJob();
         }
         return;
+    }
+
+    case Job::CurrentLoop: {
+        // Both drivers, three SET_PARAMs each; done when both have answered
+        // three times (or on the timeout).
+        if (job.step == Step::Send) {
+            for (int s = 0; s < 2; s++) {
+                loopErrors[s] = 0;
+                job.seqAtSend[s] = lastReply[s].seq;
+                sendSetParam((MotorSide)s, PARAM_CURRENT_P, job.value);
+                sendSetParam((MotorSide)s, PARAM_CURRENT_I, job.value2);
+                sendSetParam((MotorSide)s, PARAM_CURRENT_TF, job.value3);
+            }
+            job.stepStartMs = now;
+            job.step = Step::LoopWait;
+        } else {
+            bool all = true;
+            for (int s = 0; s < 2; s++) all &= (uint32_t)(lastReply[s].seq - job.seqAtSend[s]) >= 3;
+            if (!all && inStep <= REPLY_TIMEOUT_MS) break;
+            for (int s = 0; s < 2; s++) {
+                const MotorSide ms = (MotorSide)s;
+                const bool answered = (uint32_t)(lastReply[s].seq - job.seqAtSend[s]) >= 3;
+                if (!answered)         setResult(ms, "Current loop: no reply");
+                else if (loopErrors[s]) setResult(ms, "Current loop: rejected (value out of range?)");
+                else                   setResult(ms, "Current loop applied - Save & reboot to keep it");
+                send(ms, { CMD_GET_CONFIG, 0 }); // the unsaved flag
+                sendParamQueries(ms);
+            }
+            endJob();
+        }
+        break;
     }
 
     case Job::ChangeNode: {
@@ -587,6 +633,25 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
                 if (end || d[1] == 5) c.modelKnown = true;
             }
             break;
+        case CMD_SET_PARAM:
+        case CMD_GET_PARAM:
+            // [cmd][param][status][f32 value]
+            if (len >= 7) {
+                const uint8_t param = d[1];
+                const bool ok = d[2] == CONFIG_OK;
+                float v;
+                const uint32_t bits = ((uint32_t)d[3] << 24) | ((uint32_t)d[4] << 16) | ((uint32_t)d[5] << 8) | d[6];
+                memcpy(&v, &bits, 4);
+                const bool loopParam = param == PARAM_CURRENT_P || param == PARAM_CURRENT_I || param == PARAM_CURRENT_TF;
+                if (d[0] == CMD_SET_PARAM && loopParam && !ok) loopErrors[side] = loopErrors[side] + 1;
+                if (ok) {
+                    if (param == PARAM_CURRENT_P)   { c.curP = v;  c.loopKnown = true; }
+                    if (param == PARAM_CURRENT_I)   { c.curI = v;  c.loopKnown = true; }
+                    if (param == PARAM_CURRENT_TF)  { c.curTf = v; c.loopKnown = true; }
+                    if (param == PARAM_FOC_LOOP_HZ) c.focHz = v;
+                }
+            }
+            break;
         case CMD_GET_CONFIG:
             if (len >= 8) {
                 float angle;
@@ -602,7 +667,7 @@ void handleDriverConfigReply(MotorSide side, const uint8_t *d, uint8_t len) {
     portEXIT_CRITICAL(&cfgLock);
     lastReply[side].cmd = d[0];
     lastReply[side].arg = d[1];
-    lastReply[side].status = (d[0] == CMD_SET_PARAM && len >= 3) ? d[2]
+    lastReply[side].status = ((d[0] == CMD_SET_PARAM || d[0] == CMD_GET_PARAM) && len >= 3) ? d[2]
                            : (d[0] == CMD_CALIBRATION && len >= 3) ? d[2]
                            : (d[0] == CMD_NACK) ? CONFIG_ERR_UNKNOWN
                            : d[1];
@@ -632,11 +697,12 @@ static const char *opName(DriverOp op) {
         case DriverOp::Reboot:      return "Reboot";
         case DriverOp::Recalibrate: return "Re-run alignment";
         case DriverOp::SetNodeId:   return "Change node ID";
+        case DriverOp::CurrentLoop: return "Current loop";
     }
     return "?";
 }
 
-static const char *startJob(Job j, MotorSide side, DriverOp op, float value) {
+static const char *startJob(Job j, MotorSide side, DriverOp op, float value, float value2 = 0, float value3 = 0) {
     if (op != DriverOp::Refresh && balanceState == BalanceState::Balancing)
         return "Not while it's balancing - pause it or lay it down first";
     if (op != DriverOp::Refresh && !cfg[side].infoKnown)
@@ -647,10 +713,13 @@ static const char *startJob(Job j, MotorSide side, DriverOp op, float value) {
         job.side = side;
         job.op = op;
         job.value = value;
+        job.value2 = value2;
+        job.value3 = value3;
         job.step = Step::Send;
         job.stepStartMs = millis();
         job.sawRestart = false;
-        snprintf(job.text, sizeof(job.text), "%s (%s)", opName(op), kSideName[side]);
+        if (j == Job::CurrentLoop) snprintf(job.text, sizeof(job.text), "%s (both drivers)", opName(op));
+        else snprintf(job.text, sizeof(job.text), "%s (%s)", opName(op), kSideName[side]);
         job.job = j; // last: the supervisor starts on this
     }
     portEXIT_CRITICAL(&cfgLock);
@@ -676,6 +745,17 @@ const char *requestDriverOp(MotorSide side, DriverOp op, float value) {
         }
         default:                    return startJob(Job::Simple, side, op, value);
     }
+}
+
+const char *requestCurrentLoop(float p, float i, float tf) {
+    if (!(p >= 0 && p <= 50) || !(i >= 0 && i <= 100000) || !(tf >= 0 && tf <= 0.01f))
+        return "Out of range: P 0-50 V/A, I 0-100000 V/(A s), filter 0-10 ms";
+    for (int s = 0; s < 2; s++) {
+        if (!cfg[s].infoKnown || cfg[s].protocol < 5)
+            return "Both drivers need firmware 1.4 or later for the current loop settings";
+        if (linkOf(drivers[s], millis()) == MotorLink::Offline) return "A driver is offline";
+    }
+    return startJob(Job::CurrentLoop, MOTOR_LEFT, DriverOp::CurrentLoop, p, i, tf);
 }
 
 const char *requestDriverNodes(uint8_t l, uint8_t r) {
@@ -716,6 +796,9 @@ void Task_motorSupervisor(void *pvParams) {
                                   motorLinkName(drivers[s].loggedLink), motorLinkName(link));
                 // (Re)appeared on the bus: re-read its firmware and settings.
                 if (drivers[s].loggedLink == MotorLink::Offline) needsRefresh[s] = true;
+                // Started: the FOC loop rate (and current loop) can be read now.
+                if (link == MotorLink::Running && cfg[s].infoKnown && cfg[s].protocol >= 5)
+                    sendParamQueries((MotorSide)s);
                 drivers[s].loggedLink = link;
                 bump();
             }
