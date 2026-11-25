@@ -52,6 +52,13 @@ void publish(const ControlSample &s) {
 constexpr float ENGAGE_MAX_RATE = 30.0f * DEG_TO_RAD; // rad/s
 constexpr float ENGAGE_MAX_WHEEL = 3.0f;              // rad/s
 constexpr uint32_t ENGAGE_HOLD_MS = 300;
+// ...and the accelerometer on its own must agree: the tilt it reads within
+// ENGAGE_ACCEL_AGREE_DEG of the filtered tilt, with about 1 g in total (not
+// being moved). Held still, the two agree to about a degree. This catches a
+// filtered tilt that is wrong for any reason (still settling just after
+// boot, a gyro offset error) before it can start balancing while lying down.
+constexpr float ENGAGE_ACCEL_AGREE_DEG = 6.0f;
+constexpr float ENGAGE_ACCEL_G_TOL = 0.15f;  // |accel| within 1 +- this
 // Runaway: wheels faster than runawaySpeed (and 1.5x top speed) for this long
 // while balancing -> stop. Catches being lifted while running, or a crash
 // that leaves the wheels spinning free.
@@ -114,6 +121,7 @@ constexpr uint32_t IMU_SAMPLE_TIMEOUT_MS = 10;
 } // namespace
 
 const char *requestSpinTest(float amps, uint32_t phaseMs) {
+  if (driverCalibrating()) return "Not during the anti-cogging calibration";
   if (balanceState != BalanceState::Tipped)
     return "Lay the robot down first (past the cut-out angle), with its wheels free to turn";
   if (!(amps > 0) || amps > 0.5f) return "Test current must be 0-0.5 A";
@@ -137,13 +145,15 @@ const char *requestSelfRight(bool *stopping) {
     return nullptr;
   }
   if (selfRightMode == 0) return "Self-righting is off (Tune tab: Self-righting)";
+  if (driverCalibrating()) return "Not during the anti-cogging calibration";
+  if (balanceState == BalanceState::OnSide) return "It's lying on its side: it can only right itself from its front or back (on its hoop)";
   if (balanceState != BalanceState::Tipped) return "It can only right itself while lying down (past the cut-out angle)";
   srStartRequested = true;
   return nullptr;
 }
 
 const char *requestSelfRightPush(uint32_t ms) {
-  if (balanceState != BalanceState::Tipped) return "Lay the robot down on its hoop first";
+  if (balanceState != BalanceState::Tipped) return "Lay the robot down on its hoop (front or back, not its side) first";
   if (ms < 50 || ms > 500) return "Push length must be 50-500 ms";
   srPushRequestMs = ms;
   Capture::start(3, Capture::Trigger::Now);
@@ -196,6 +206,7 @@ const char *balanceStateName(BalanceState s) {
     case BalanceState::Waiting:        return "waiting";
     case BalanceState::Runaway:        return "runaway";
     case BalanceState::Righting:       return "righting";
+    case BalanceState::OnSide:         return "on-side";
   }
   return "?";
 }
@@ -233,6 +244,7 @@ void Task_LQR(void *pvParam) {
   // Start/stop logic (see ENGAGE_* and RUNAWAY_MS).
   bool engaged = false;
   bool runaway = false;
+  bool wasOnSide = false; // for logging changes
   bool spinTesting = false;
   uint32_t spinStartMs = 0;
   uint32_t readySinceMs = 0, runawaySinceMs = 0, stallSinceMs = 0;
@@ -256,6 +268,9 @@ void Task_LQR(void *pvParam) {
   uint8_t lifted = 0;
   uint32_t liftOkSinceMs = 0, liftStartMs = 0;
   float liftPeak = 0;
+
+  DeviceLog::printf("[lqr] started: tilt %+.1f deg, side %+.1f deg, accel %+.2f %+.2f %+.2f g\n",
+                    theta[2] * kRadToDeg, theta[1] * kRadToDeg, imuAccel[0], imuAccel[1], imuAccel[2]);
 
   while (1) {
       // Wait for the next IMU sample. pdTRUE: clear the count, so if samples
@@ -453,9 +468,13 @@ void Task_LQR(void *pvParam) {
       // ---- Start / stop ----------------------------------------------------
       const uint32_t stepMs = millis();
       const bool upright = ((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD));
+      // Lying on its side the forward/back tilt reads about 0 (the
+      // accelerometer's forward axis is level), the same as standing up, so
+      // the sideways lean (theta[1]) has its own cut-out.
+      const bool onSide = fabsf(theta[1]) > sideCutoutAngle * DEG_TO_RAD;
       // Don't drive one wheel on its own if the other driver is down.
       const bool batteryOk = !Battery::isLow();
-      const bool canRun = !paused && motorsOk && batteryOk && upright;
+      const bool canRun = !paused && motorsOk && batteryOk && upright && !onSide;
       if (!canRun) engaged = false;
 
       if (engaged) {
@@ -473,12 +492,22 @@ void Task_LQR(void *pvParam) {
       }
 
       if (!engaged && canRun) {
-        const bool ready = fabsf(theta[2] - setPoint) < engageAngle * DEG_TO_RAD
+        // Tilt from the accelerometer alone (same formula as the filter's).
+        const float ax = imuAccel[0], ay = imuAccel[1], az = imuAccel[2];
+        const float accelG = sqrtf(ax * ax + ay * ay + az * az);
+        const float accelTilt = atan2f(-ay, sqrtf(az * az + ax * ax));
+        const bool accelAgrees = fabsf(accelG - 1.0f) < ENGAGE_ACCEL_G_TOL
+                              && fabsf(accelTilt - theta[2]) < ENGAGE_ACCEL_AGREE_DEG * DEG_TO_RAD;
+        const bool ready = imuInitOk()
+                        && fabsf(theta[2] - setPoint) < engageAngle * DEG_TO_RAD
                         && fabsf(theta_dot[2]) < ENGAGE_MAX_RATE
-                        && fabsf(phi_dot) < ENGAGE_MAX_WHEEL;
+                        && fabsf(phi_dot) < ENGAGE_MAX_WHEEL
+                        && accelAgrees;
         if (!ready) readySinceMs = 0;
         else if (!readySinceMs) readySinceMs = stepMs | 1;
         else if (stepMs - readySinceMs >= ENGAGE_HOLD_MS) {
+          DeviceLog::printf("[lqr] balancing: tilt %+.1f deg (accel %+.1f, %.2f g), side %+.1f deg, %.0f s after boot\n",
+                            theta[2] * kRadToDeg, accelTilt * kRadToDeg, accelG, theta[1] * kRadToDeg, stepMs / 1000.0f);
           engaged = true;
           runaway = false;
           runawaySinceMs = 0;
@@ -497,9 +526,15 @@ void Task_LQR(void *pvParam) {
         balanceState = !motorsOk  ? BalanceState::MotorsNotReady
                      : paused     ? BalanceState::Paused
                      : !batteryOk ? BalanceState::BatteryLow
+                     : onSide     ? BalanceState::OnSide
                      : !upright   ? BalanceState::Tipped
                      : runaway    ? BalanceState::Runaway
                                   : BalanceState::Waiting;
+      }
+      if (onSide != wasOnSide) {
+        wasOnSide = onSide;
+        DeviceLog::printf(onSide ? "[lqr] on its side (%+.0f deg sideways) - won't balance\n"
+                                 : "[lqr] off its side (%+.0f deg sideways)\n", theta[1] * kRadToDeg);
       }
 
       // ---- Self-righting -------------------------------------------------
@@ -522,7 +557,7 @@ void Task_LQR(void *pvParam) {
       // -srDir x the rocking current (flipped by srInvert).
       {
         const bool tippedNow = (balanceState == BalanceState::Tipped);
-        const bool srOk = motorsOk && batteryOk && !paused && !spinTesting;
+        const bool srOk = motorsOk && batteryOk && !paused && !spinTesting && !driverCalibrating(); // (not during an anti-cogging calibration)
         const float tiltDeg = theta[2] * kRadToDeg;
         const float fromSpDeg = (theta[2] - setPoint) * kRadToDeg;
         const float handoverDeg = fminf(selfRightHandover, deactivationAngle - 2.0f);
@@ -620,6 +655,13 @@ void Task_LQR(void *pvParam) {
             break;
 
           case SrPhase::Rocking: {
+            if (onSide) {
+              // Rocking only works on the hoop; on its side it can't get up.
+              DeviceLog::printf("[selfright] rolled onto its side (%+.0f deg sideways) - stopped\n", theta[1] * kRadToDeg);
+              blockAuto();
+              stop(SrPhase::Idle);
+              break;
+            }
             if (fabsf(tiltDeg) > SR_MAX_TILT_DEG) {
               attemptFailed("rolled too far over");
               break;
@@ -681,7 +723,7 @@ void Task_LQR(void *pvParam) {
             break;
 
           case SrPhase::Push: {
-            if (stepMs - srPhaseStartMs >= srPushMs) {
+            if (onSide || stepMs - srPhaseStartMs >= srPushMs) {
               DeviceLog::println("[selfright] push test done");
               stop(SrPhase::Idle);
               break;
@@ -727,6 +769,14 @@ void Task_LQR(void *pvParam) {
       else if (learnTrim && nowStepMs - stillSinceMs >= TRIM_SETTLE_MS) {
         setPointTrim = constrain(setPointTrim + (theta[2] - setPoint) * (dt / TRIM_TAU_S),
                                  -TRIM_LIMIT_RAD, TRIM_LIMIT_RAD);
+      }
+
+      // During the drivers' anti-cogging calibration they turn the wheels
+      // themselves, and any current command would abort it.
+      if (driverCalibrating()) {
+        leftTargetCurrent = 0;
+        rightTargetCurrent = 0;
+        spinTesting = false;
       }
 
       // Send straight away (previously a separate 500 Hz task sent whatever

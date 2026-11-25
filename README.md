@@ -68,6 +68,51 @@ Command bytes: `0x02` shaft velocity, `0x03` driver status heartbeat, `0x10` sta
 
 Both firmware projects use [PlatformIO](https://platformio.org/).
 
+### Setting up PlatformIO
+
+1. Install the **PlatformIO IDE** extension in VS Code (publisher: PlatformIO). Don't use the "pioarduino IDE" extension. It installs its own fork of PlatformIO Core, which reports a version such as `6.2.0-post.1`, and the pinned platform rejects that as older than 6.2.0.
+2. Check the core version. It must be a plain **6.2.0 or newer**:
+
+   ```bash
+   pio --version          # e.g. "PlatformIO Core, version 6.2.0"
+   ```
+
+   If it's older, or has a `-post`/`-dev` suffix, upgrade it:
+
+   ```bash
+   ~/.platformio/penv/bin/pip install -U "platformio>=6.2.0"
+   ```
+
+3. **Optional:** use `pio` outside VS Code. VS Code only puts `pio` on the PATH in its own terminals. To use it in any terminal (macOS/Linux):
+
+   ```bash
+   mkdir -p ~/.local/bin
+   ln -s ~/.platformio/penv/bin/platformio ~/.local/bin/platformio
+   ln -s ~/.platformio/penv/bin/pio ~/.local/bin/pio
+   ln -s ~/.platformio/penv/bin/piodebuggdb ~/.local/bin/piodebuggdb
+   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # if ~/.local/bin isn't already on PATH
+   ```
+
+   Link the commands rather than adding `~/.platformio/penv/bin` to PATH: that folder also contains PlatformIO's own `python` and `pip`, which would shadow your system ones. If you delete `~/.platformio`, these links break until the core is reinstalled.
+
+The first build downloads the platform, toolchain and libraries (a few hundred MB) into `~/.platformio`. Later builds reuse them.
+
+### Pinned versions
+
+To make sure every machine builds the same firmware, `firmware/platformio.ini` pins the versions of everything it uses:
+
+| What | Pinned to |
+|---|---|
+| Platform | pioarduino [`55.03.312`](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.312): Arduino core 3.3.12, ESP-IDF 5.5.5, GCC 14.2 |
+| Registry libraries | Exact versions (`@ 3.6.1`, not `@ ^3.3.2`) |
+| Git libraries | Release tags (`#2.5.2`), or a commit SHA where the repo has no tags (ACAN-ESP32FD) |
+
+**Don't change the platform back to the `.../releases/download/stable/...` URL.** It always points to pioarduino's newest release, and PlatformIO keeps whichever release it downloaded first, so two machines can end up building against different cores. In November 2026 `stable` moved to Arduino core 4.0 / ESP-IDF 6.1, which NimBLE-Arduino 2.5.2 (and probably other libraries here) doesn't build on: `'struct ble_npl_event' has no member named 'event'` in `ble_hs_periodic_sync.c`.
+
+To upgrade a dependency, change its pin, delete `firmware/.pio`, rebuild, and test on the robot before committing.
+
+### Flashing
+
 **Controller board:** the web page (`firmware/data/index.html`) is compiled into the firmware by `firmware/scripts/embed_web.py`, so there is no separate filesystem upload.
 
 ```bash
@@ -122,7 +167,7 @@ The files are written to `tools/qr-codes/` (git-ignored, as they contain the rob
 
 Joining the network opens the web page automatically on most phones (captive portal); otherwise browse to `http://192.168.71.1/`. (The address isn't the ESP32 default 192.168.4.1, because some home routers use that range.) The page updates live over a WebSocket and has five tabs:
 
-- **Tune:** live state, tilt, set point, wheel speed, loop rate, both motor drivers' state and the battery level; a battery chart (average of the two drivers' readings, optionally each driver's) and a telemetry chart (tilt, LQR and motor currents, tilt rate, wheel speed) over 10 s to 1 h; every tunable setting, with an explanation for each, and **Save to flash / Revert to saved / Factory defaults**; and **Record**, which captures every control step (5-60 s, now or when it next starts balancing) for download as CSV, with the settings in use in its header.
+- **Tune:** live state, tilt, set point, wheel speed, loop rate, both motor drivers' state and the battery level; a battery chart (average of the two drivers' readings, optionally each driver's) and a telemetry chart (tilt, LQR and motor currents, tilt rate, wheel speed) over 10 s to 1 h; every tunable setting, with an explanation for each, and **Save to flash / Revert to saved / Factory defaults**; and **Record**, which captures every control step (5-60 s, now or when it next starts balancing) for download as CSV, with the settings in use in its header. The IMU panel shows the gyro offsets in use and has **Re-zero gyro** (see Start-up below).
 - **Control:** the touch joystick and gamepad selection, Pause, and a live status readout. The browser's Gamepad API needs Chrome or Edge here: Firefox only allows it on HTTPS pages.
 - **WiFi:** the **Access point only** switch (on by default, for open days), saved networks (up to 5), a scan of networks in range, and the connection status. With Access point only off, the robot joins the strongest saved network at power-on and falls back to its own access point when none is available. On a home network it's at `http://balancebot-xxxxxx.local/`.
 - **Log:** recent messages from the robot (start-up, motor drivers, IMU, WiFi, battery), with their uptime.
@@ -133,6 +178,18 @@ Drive input is zeroed if the page stops sending for 300 ms, and straight away if
 ### Battery
 
 The controller has no voltage sensing of its own: both motor drivers measure their supply (the same 3S Li-ion pack) and report it in their CAN status heartbeat. This needs BLDC-Driver firmware that fills in the voltage field (older firmware sends 0, shown as "no reading"). Below the **Battery cutoff** setting (9.6 V by default, 3.2 V per cell; 0 turns it off) the robot stops balancing until the voltage recovers by 0.3 V.
+
+### Start-up
+
+The OLED shows each boot step (`5/7 Calibrating gyro`) with a progress bar, and each step is logged with its time (`[boot 05/07 +0.84 s] ...`, on serial and in the Log tab), followed by a summary of how long each took (serial command `BOOT` prints it again).
+
+Leave the robot still for the first second or two. The gyro is calibrated before the motor drivers start, because their start moves the wheels:
+
+- **Saved offsets** (from **Re-zero gyro**): a 0.25 s check. If the robot is still and the reading is within 0.5 deg/s of the saved offsets, that reading is used. Otherwise it does a full 1 s zero.
+- **No saved offsets** (first boot, or after **Factory defaults** + Save): a full zero, which is then saved.
+- If the robot keeps moving, it falls back to the saved offsets.
+
+The status LED flashes purple meanwhile. The saved offsets are hidden settings (`gyroOffX/Y/Z`), included in settings exports but not ticked by default on import, since they belong to one robot's IMU. Drivers with a stored alignment start together; a driver without one aligns at every start, which is slower (the log says so).
 
 ## Tuning over serial
 
@@ -149,6 +206,7 @@ The controller board accepts commands at 115200 baud, one per line:
 | `SAVE`       | Save the settings to flash                       |
 | `MS`         | Print each motor driver's link state, flags, start attempts and last error |
 | `MR`         | Reset start attempts so a driver that gave up is tried again |
+| `BOOT`       | Print how long each boot step took               |
 
 Changes made over serial show up on the web page too. Without a value, a command prints the current one. Default values, ranges and help texts for every setting live in [`firmware/src/Settings.cpp`](firmware/src/Settings.cpp).
 

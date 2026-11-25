@@ -330,9 +330,10 @@
           <div class="legend" id="legend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
         </div>
         <div class="panel">
-          <h2>IMU (raw axes)</h2>
+          <h2>IMU (raw axes) <button id="gyroRezeroBtn" class="small" disabled>Re-zero gyro</button></h2>
           <div class="chart-wrap short"><canvas id="imuChart"></canvas></div>
           <div class="legend" id="imuLegend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
+          <p class="muted" id="gyroInfo" style="margin:8px 0 0">Gyro offsets: -</p>
           <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to all the charts. History covers
             the time this page has been open (up to 1 hour); over 1 min, each point is a 1 s average with its min-max range shaded.
             The battery voltage comes from the two motor drivers, which share the pack.</p>
@@ -476,6 +477,38 @@
         whine or buzz. Re-run the spin test after a change. Needs driver firmware 1.4.</p>
     </div>
     <div class="panel">
+      <h2>Anti-cogging (both drivers)</h2>
+      <table class="ref" id="cogInfo"></table>
+      <div class="actions">
+        <button id="cogOn">Turn on</button>
+        <button id="cogSlots">Slots only</button>
+        <button id="cogOff">Turn off</button>
+        <button id="cogCal">Measure</button>
+        <button id="cogRefine">Refine</button>
+        <button id="cogAbort">Stop</button>
+        <button id="cogClear">Clear</button>
+        <button id="cogRead">Read tables</button>
+        <a id="cogCsv" href="/cogging.csv" download hidden>Download CSV</a>
+      </div>
+      <p class="muted" id="cogNote"></p>
+      <div class="chart-wrap" id="cogChartWrap" hidden><canvas id="cogChart"></canvas></div>
+      <p class="muted" id="cogChartNote" hidden>Current each driver adds at each encoder angle (mA): <span style="color:#4fa3ff">left</span>,
+        <span style="color:#ff9f43">right</span>. The angle is the encoder's own, so the two wheels don't line up with each other.</p>
+      <p class="muted">The motors' magnets pull towards the stator teeth (264 steps per turn on these motors), so the wheels
+        have slightly preferred positions. Standing still, the balance controller feels them as bumps: a small sway, worse
+        on motors that cog more. Anti-cogging measures the bumps once on each driver and then cancels them by adding the
+        opposite current at every angle, at low wheel speeds (it fades out between 6 and 15 rad/s).
+        <b>Read tables</b> shows what each driver has stored (and offers it as a CSV).
+        <b>Measure</b>: lay the robot down with both wheels free; each driver turns its wheel slowly one turn each way
+        (about a minute, the controller sends no current meanwhile). <b>Agreement</b> above about 85% is good; if the
+        <b>largest position error</b> is over about 5 mrad, run <b>Refine</b> once (it measures again with the
+        correction applied and adds what's left). Then <b>Turn on</b> and press <b>Save &amp; reboot</b> on each driver to
+        keep the tables and the setting. <b>Slots only</b> leaves out the slowest bumps (1&ndash;3 per turn): on e4a7d0 full
+        compensation calmed the sway but let the robot wander slowly, probably because the 2-per-turn part changes with
+        the load on the bearings. On/off/slots applies at once, also while balancing, so you can compare. Re-measure after
+        changing a motor or its magnet. Needs driver firmware 1.7.</p>
+    </div>
+    <div class="panel">
       <h2>Wheel spin test (for tuning)</h2>
       <div class="actions">
         <label>Current <input id="spinAmps" type="number" class="inline" value="0.1" min="0.02" max="0.5" step="0.02" style="width:5em"> A</label>
@@ -597,8 +630,9 @@
             <tr><td>Left</td><td id="iDrvL">-</td></tr>
             <tr><td>Right</td><td id="iDrvR">-</td></tr>
           </table>
-          <p class="muted">The controller starts FOC on each driver in turn (the wheel twitches during its alignment,
-            unless the driver has a stored alignment), and restarts a driver that resets. After 3 failed starts it
+          <p class="muted">The controller starts FOC on the drivers once the gyro is calibrated: together if both have a
+            stored alignment, otherwise one at a time (the wheel turns during its alignment, and booting takes longer),
+            and restarts a driver that resets. After 3 failed starts it
             gives up; <b>Retry motor start</b> (Tune tab) lets it try again.</p>
         </div>
       </div>
@@ -606,16 +640,20 @@
         <div class="panel">
           <h2>Starting up</h2>
           <table class="ref">
-            <tr><td>Power on</td><td>Leave it lying still. WiFi comes up within a few seconds, then the motor drivers
-              start, then the gyro is zeroed (status LED: 3 slow purple flashes, then 3 quick ones when done).</td></tr>
+            <tr><td>Power on</td><td>Leave it lying still for the first second or two: the gyro is checked against the
+              saved offsets, or zeroed (status LED flashing purple), before the motor drivers start. The OLED shows each
+              boot step; WiFi comes up meanwhile, then the motors start and it's ready within a few seconds.</td></tr>
             <tr><td>Balancing</td><td>Stand it upright and hold it still for a moment: it starts once it's within the
               start angle of the set point and steady, then balances until it tips past the cut-out angle. Lay it down
               (or let it fall) and the motors switch off. If the wheels spin up (lifted, or after a crash) it stops
               and waits to be stood up again.</td></tr>
+            <tr><td>On its side</td><td>Leaning sideways past the side cut-out angle (Tune tab, Balance) it won't
+              balance or self-right: on its side the forward/back tilt reads about 0, like standing up. Stand it up or lay
+              it on its front or back.</td></tr>
             <tr><td>Pause</td><td>Holds the motors at 0 A until resumed (not saved: it's balancing again after a restart).</td></tr>
             <tr><td>Low battery</td><td>Below the battery cutoff (Tune tab, System) it stops balancing until the pack
               is charged or swapped.</td></tr>
-            <tr><td>OLED</td><td>Shows the state, tilt, set point, motor currents and driver states, or a fault
+            <tr><td>OLED</td><td>While booting: the step it's on, with a progress bar. Then shows the state, tilt, set point, motor currents and driver states, or a fault
               screen naming the problem.</td></tr>
           </table>
         </div>
@@ -779,6 +817,7 @@ let ws = null;
 let retryDelay = 500, retryTimer = null, lastMsg = 0;
 let telemetryMs = 50;
 let robotName = "";
+let gyroBusy = false;     // a gyro re-zero is running (from the "gyro" message)
 
 const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
 
@@ -787,6 +826,7 @@ function setConnected(on, text) {
   $("statusText").textContent = text;
   for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
                     "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn", "exportBtn", "importBtn"]) $(id).disabled = !on;
+  $("gyroRezeroBtn").disabled = !on || gyroBusy;
   $("joystickPad").classList.toggle("disabled", !on);
   if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
 }
@@ -1157,7 +1197,7 @@ function showImport(data, filename) {
       td.textContent = c.p.label;
       const k = document.createElement("div");
       k.className = "key";
-      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs, set on the Drivers tab), so off by default" : "") +
+      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs or the gyro offsets, which belong to one robot), so off by default" : "") +
         (c.clamped ? ` - the file's ${c.raw} is outside ${c.p.min} to ${c.p.max}, so limited` : "");
       td.appendChild(k);
       tr.insertCell().className = "num";
@@ -1240,6 +1280,16 @@ function togglePause() {
 $("pauseBtn").onclick = togglePause;
 $("pauseBtn2").onclick = togglePause;
 $("retryBtn").onclick = () => { send({ cmd: "motorRetry" }); log("Retry motor start"); };
+
+// Gyro re-zero (IMU panel): measured for 1 s on the robot, then saved as the
+// reference the boot-time gyro check compares against.
+$("gyroRezeroBtn").onclick = async () => {
+  if (await ask("Lay the robot down (or prop it up) and keep it completely still for about a second. The gyro offsets " +
+                "are measured, used straight away and saved; each boot then only does a quick check against them.", "Re-zero")) {
+    send({ cmd: "gyroRezero" });
+    log("Re-zero gyro");
+  }
+};
 $("selfRightBtn").onclick = () => send({ cmd: "selfRight" });
 
 function setTile(id, text, cls = "") {
@@ -1252,10 +1302,10 @@ const STATE_TEXT = {
   "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
   "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
   "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
-  "righting": "self-righting",
+  "righting": "self-righting", "on-side": "lying on its side (past the side cut-out angle)",
 };
 const STATE_CLASS = {
-  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn",
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn", "on-side": "",
 };
 const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
 
@@ -1639,7 +1689,7 @@ charts.make({
     { key: "ax",    label: "Accel X (g ×10)", colour: "#ffb3b3", on: false, scale: 10 },
     { key: "ay",    label: "Accel Y (g ×10)", colour: "#a5e8bd", on: false, scale: 10 },
     { key: "az",    label: "Accel Z (g ×10)", colour: "#a8d1ff", on: false, scale: 10 },
-    { key: "pitch", label: "Pitch (°)",       colour: "#e0c35a", on: false },
+    { key: "pitch", label: "Side lean (°)",       colour: "#e0c35a", on: false },
   ],
 });
 charts.make({
@@ -2034,6 +2084,7 @@ function renderDrivers(m) {
     const rows = [["CAN node", `${d.node} (commands 0x${(0x20 + d.node).toString(16).padStart(3, "0")}, ` +
                                `telemetry 0x${(0x100 + d.node).toString(16)})`], ["State", d.link]];
     if (d.known) rows.push(["Board", d.model || "not reported (firmware before 1.3)"]);
+    if (d.serial) rows.push(["Serial number", d.serial]);
     if (d.known) rows.push(["Firmware", `${d.fw} (CAN protocol ${d.proto}, ${d.kb} KB)` +
                                         (d.proto < 3 ? " - update to 1.2: it won't receive motor currents from this controller" : "")]);
     else if (d.old) rows.push(["Firmware", "1.0 or older: settings over CAN need 1.1 (update over USB)"]);
@@ -2120,7 +2171,122 @@ function renderDrivers(m) {
   $("drvLegacy").hidden = !heard.has(0);
   $("drvSwap").disabled = busy || m.balancing;
   renderCurrentLoop(m, busy);
+  renderCogging(m, busy);
 }
+
+// Anti-cogging panel.
+const COG_FAIL = { 1: "FOC stopped", 2: "a current command arrived", 3: "the wheel didn't follow (blocked?)",
+                   4: "stopped", 5: "angles missed", 6: "no table to refine" };
+function cogText(g) {
+  if (!g) return "-";
+  const parts = [];
+  if (g.st >= 1 && g.st <= 3) parts.push(`measuring: ${["", "settling", "forwards", "backwards"][g.st]} ${g.det}%`);
+  if (g.fl & 1) {
+    let t = `table ${g.amp} mA peak-to-peak, friction ${g.fric} mA`;
+    if (g.q !== undefined) t += `, agreement ${g.q}%`;
+    if (g.err !== undefined && g.st >= 4) t += `, largest position error ${g.err >= 25.5 ? "> 25" : g.err.toFixed(1)} mrad`;
+    if (g.noise !== undefined) t += `, noise left out ${g.noise.toFixed(1)} mA`;
+    if (g.fl & 32) t += " (refined)";
+    parts.push(t);
+  } else parts.push("no table");
+  if (g.fl & 8) parts.push("measured with the other sensor direction - not used, measure again");
+  if (g.st === 5) parts.push("last measurement failed: " + (COG_FAIL[g.det] || g.det));
+  parts.push((g.fl & 2) ? ((g.fl & 64) ? "SLOTS ONLY" : "ON") + ((g.fl & 16) ? " (applied)" : "") : "off");
+  if (g.fl & 4) parts.push("UNSAVED");
+  return parts.join("; ");
+}
+function renderCogging(m, busy) {
+  const [l, r] = m.d;
+  const ok = m.d.every((d) => d.known && d.proto >= 7 && d.link !== "OFFLINE");
+  const t = $("cogInfo");
+  t.innerHTML = "";
+  [["Left", l], ["Right", r]].forEach(([k, d]) => {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td"), td2 = document.createElement("td");
+    td1.textContent = k;
+    td2.textContent = d.known && d.proto >= 7 ? cogText(d.cog) : "needs driver firmware 1.7";
+    tr.append(td1, td2);
+    t.appendChild(tr);
+  });
+  const tables = m.d.every((d) => d.cog && (d.cog.fl & 1) && !(d.cog.fl & 8));
+  const on = m.d.every((d) => d.cog && (d.cog.fl & 2));
+  const measure = ok && !busy && m.tipped;
+  $("cogCal").disabled = !measure;
+  $("cogRefine").disabled = !measure || !tables;
+  $("cogAbort").disabled = !m.cogCal;
+  $("cogClear").disabled = !ok || busy || m.balancing;
+  const slots = m.d.every((d) => d.cog && (d.cog.fl & 2) && (d.cog.fl & 64));
+  $("cogOn").disabled = !ok || busy || (on && !m.d.some((d) => d.cog && (d.cog.fl & 64)));
+  $("cogSlots").disabled = !ok || busy || slots;
+  $("cogOff").disabled = !ok || busy || !m.d.some((d) => d.cog && (d.cog.fl & 2));
+  $("cogRead").disabled = !ok || busy || m.balancing || !m.d.some((d) => d.cog && (d.cog.fl & 1));
+  $("cogCsv").hidden = !m.cogTab;
+  if (m.cogTab && m.cogTabV !== cogTabSeen) { cogTabSeen = m.cogTabV; loadCogTables(); }
+  setText($("cogNote"), !ok ? "Both drivers need firmware 1.7 or later (and to be online)."
+    : m.cogCal ? "Measuring - keep both wheels free. Stop cancels it."
+    : !m.tipped ? "Lay the robot down (past the cut-out angle) with both wheels free to measure."
+    : (on && !tables) ? "Turned on, but a driver has no table: measure first." : "");
+}
+$("cogCal").onclick = async () => {
+  if (!(await ask("Both wheels turn slowly, one turn each way, for about a minute. Make sure they're free to turn " +
+                  "(robot lying down, nothing touching the wheels).", "Measure"))) return;
+  send({ cmd: "driver", op: "cogCal" });
+};
+$("cogRefine").onclick = () => send({ cmd: "driver", op: "cogRefine" });
+$("cogRead").onclick = () => send({ cmd: "driver", op: "cogRead" });
+
+// Chart of the tables last read (fetched from /cogging.csv).
+let cogTabSeen = -1, cogRows = null;
+async function loadCogTables() {
+  try {
+    const r = await fetch("/cogging.csv", { cache: "no-store" });
+    if (!r.ok) return;
+    const lines = (await r.text()).trim().split("\n").slice(1);
+    cogRows = lines.map((l) => l.split(",").map((v) => (v === "" ? NaN : Number(v))));
+    $("cogChartWrap").hidden = false;
+    $("cogChartNote").hidden = false;
+    drawCogChart();
+  } catch (e) { /* page offline: leave the old chart */ }
+}
+function drawCogChart() {
+  const cv = $("cogChart");
+  if (!cogRows || cv.offsetParent === null) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  let max = 10;
+  for (const row of cogRows) for (const v of [row[2], row[3]]) if (Number.isFinite(v)) max = Math.max(max, Math.abs(v));
+  max = Math.ceil(max / 10) * 10;
+  const L = 40, R = 6, T = 6, B = 18, x = (deg) => L + (W - L - R) * deg / 360, y = (v) => T + (H - T - B) * (0.5 - v / (2 * max));
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue("--muted") || "#888"; g.fillStyle = g.strokeStyle;
+  g.lineWidth = 0.5; g.font = "11px sans-serif"; g.globalAlpha = 0.6;
+  for (const v of [-max, 0, max]) { g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke(); g.fillText(String(v), 2, y(v) + 4); }
+  for (let d = 0; d <= 360; d += 90) g.fillText(d + "\u00b0", Math.min(x(d) - 8, W - 28), H - 4);
+  g.globalAlpha = 1; g.lineWidth = 1;
+  [[2, "#4fa3ff"], [3, "#ff9f43"]].forEach(([col, colour]) => {
+    g.strokeStyle = colour; g.beginPath();
+    let started = false;
+    for (const row of cogRows) {
+      if (!Number.isFinite(row[col])) continue;
+      const px = x(row[1]), py = y(row[col]);
+      if (started) g.lineTo(px, py); else { g.moveTo(px, py); started = true; }
+    }
+    g.stroke();
+  });
+}
+window.addEventListener("resize", () => requestAnimationFrame(drawCogChart));
+document.querySelector('.tab[data-tab="drivers"]').addEventListener("click", () => requestAnimationFrame(drawCogChart));
+$("cogAbort").onclick = () => send({ cmd: "driver", op: "cogAbort" });
+$("cogClear").onclick = async () => {
+  if (!(await ask("Forget both drivers' anti-cogging tables? (Revert or not saving brings them back.)", "Clear", true))) return;
+  send({ cmd: "driver", op: "cogClear" });
+};
+$("cogOn").onclick = () => send({ cmd: "driver", op: "cogOn" });
+$("cogSlots").onclick = () => send({ cmd: "driver", op: "cogSlots" });
+$("cogOff").onclick = () => send({ cmd: "driver", op: "cogOff" });
 
 // Current loop panel: shows the left driver's values until edited.
 let curEdited = false;
@@ -2208,6 +2374,16 @@ const handlers = {
   notice(m) {
     toast(m.text, m.ok);
     log(m.text);
+  },
+  gyro(m) {
+    gyroBusy = m.busy;
+    const fmt = (a) => a.map((v, i) => "XYZ"[i] + " " + (v >= 0 ? "+" : "") + v.toFixed(3)).join(", ");
+    setText($("gyroInfo"), `Gyro offsets in use: ${fmt(m.off)} \u00b0/s (${m.source}` +
+      (m.noise ? `, noise ${m.noise.toFixed(2)} \u00b0/s` : "") + "). " +
+      (m.saved ? `Saved: ${fmt(m.saved)} \u00b0/s.` : "None saved: the next boot zeroes the gyro and saves it."));
+    const b = $("gyroRezeroBtn");
+    b.textContent = m.busy ? "Re-zeroing..." : "Re-zero gyro";
+    b.disabled = m.busy || !isOpen();
   },
 };
 

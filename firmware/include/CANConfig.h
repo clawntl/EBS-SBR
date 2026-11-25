@@ -107,10 +107,21 @@ enum CAN_CMD : uint8_t {
     // [0x27][page] -> page 0:   [0x27][0][capabilities u32][hw rev][0]
     //                 page 1-5: [0x27][page][6 chars of the model name, NUL-padded]
     // The model name (e.g. "BLDC-Driver v0.2") is up to 30 characters.
+    //                 page 6-7: [0x27][page][6 bytes of the MCU unique ID] (protocol 7):
+    //                           the board's serial number, 24 hex digits
     CMD_GET_BOARD_INFO = 0x27,
     // Read a parameter (protocol 5, firmware 1.4+):
     // [0x28][param] -> [0x28][param][status][f32 value]
     CMD_GET_PARAM   = 0x28,
+    // Anti-cogging (protocol 7, firmware 1.7+): [0x29][COG_OP_*] ->
+    //   ops 0-4: [0x29][op][status][CogState][progress % or CogFailure]
+    //            [COG_FLAG_*][table peak-to-peak, 4 mA units][friction, 2 mA units]
+    //   op 5:    [0x29][5][status][coverage %][agreement %][max position error, 0.1 mrad]
+    //            [noise left out of the table, 0.5 mA]
+    //   op 6:    [0x29][6][bin hi][bin lo] -> [0x29][6][bin hi][bin lo][4 x int8 counts]
+    //            (bin hi 0xFF = no table)
+    //   op 7:    -> [0x29][7][status][A per count, f32][bins / 16]
+    CMD_COGGING     = 0x29,
     CMD_NACK        = 0xFE, // driver -> host: [0xFE][command][1] not understood
 
     // Driver -> host: [0xFF][float error code (DriverError)]
@@ -126,6 +137,7 @@ enum DriverParam : uint8_t {
     PARAM_CURRENT_P  = 0x20, // V/A, 0-50 (driver default 3)
     PARAM_CURRENT_I  = 0x21, // V/(A s), 0-100000 (default 300)
     PARAM_CURRENT_TF = 0x22, // s, 0-0.01 (default 0.00053)
+    PARAM_COG_COMP   = 0x23, // anti-cogging compensation 0 off / 1 on / 2 slots only (protocol 7): tuning, like the current loop
     PARAM_FOC_LOOP_HZ = 0x30, // read only: the driver's FOC loop rate
 };
 
@@ -137,6 +149,29 @@ enum DriverConfigStatus : uint8_t {
     CONFIG_ERR_BAD_VALUE   = 2,
     CONFIG_ERR_NOT_ALIGNED = 3,
     CONFIG_ERR_FLASH       = 4,
+    CONFIG_ERR_NOT_RUNNING = 5, // CMD_COGGING calibrate/refine without FOC running
+};
+
+enum DriverCogOp : uint8_t {
+    COG_OP_STATUS = 0, COG_OP_CALIBRATE = 1, COG_OP_REFINE = 2, COG_OP_ABORT = 3, COG_OP_CLEAR = 4, COG_OP_RESULT = 5,
+    COG_OP_READ = 6, COG_OP_INFO = 7,
+};
+// Bins in a driver's anti-cogging table (COG_OP_INFO reports it).
+#define DRIVER_COG_BINS 1920
+
+enum DriverCogState : uint8_t {
+    COG_STATE_IDLE = 0, COG_STATE_SETTLING = 1, COG_STATE_FORWARD = 2, COG_STATE_BACKWARD = 3,
+    COG_STATE_DONE = 4, COG_STATE_FAILED = 5,
+};
+
+enum DriverCogFlag : uint8_t {
+    COG_FLAG_TABLE    = 1 << 0, // a table is loaded / newly calibrated
+    COG_FLAG_ENABLED  = 1 << 1, // compensation switched on
+    COG_FLAG_UNSAVED  = 1 << 2, // table calibrated / cleared since the last save
+    COG_FLAG_MISMATCH = 1 << 3, // table measured with the other sensor direction (not used)
+    COG_FLAG_APPLIED  = 1 << 4, // being applied now
+    COG_FLAG_REFINED  = 1 << 5,
+    COG_FLAG_SLOTS    = 1 << 6, // compensation in "slots only" mode (lowest harmonics left out)
 };
 
 enum DriverConfigFlag : uint8_t {

@@ -7,10 +7,10 @@
 #include "bmi160.h"
 #include "bmi160_defs.h"
 
+#include "Config.h"
 #include "DeviceLog.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
-#include "StatusLED.h"
 
 float theta_dot[3];  // {yaw, pitch, roll}
 float theta[3];      // {yaw, pitch, roll}
@@ -26,10 +26,23 @@ const uint32_t BMI_spiClk = 10'000'000UL;  // 10 MHz SPI
 
 struct bmi160_dev bmi; // BMI160 Struct for API
 
-float X_Offset;
-float Y_Offset;
-float Z_Offset;
-float pitchOffset;
+// Gyro offsets [rad/s] in the BMI160's axes, subtracted from every reading.
+// Set by the gyro calibration (src/GyroCal.cpp) through setGyroOffsets().
+volatile float gyroOffset[3] = {0, 0, 0};
+
+// Gyro measurement (mean and spread over a number of samples), done by
+// Task_BMI160 on the samples it reads anyway, so nothing else touches the
+// SPI bus. Requested by startGyroMeasurement(); the task owns the running
+// sums.
+portMUX_TYPE measLock = portMUX_INITIALIZER_UNLOCKED;
+volatile bool measRequested = false;
+volatile bool measRunning = false;
+uint16_t reqSkip = 0, reqTarget = 0;    // handed over under measLock
+uint16_t measSkip = 0, measTarget = 0, measCount = 0;
+double measSum[3], measSumSq[3], measAccel;
+GyroMeasurement measResult = {};        // under measLock
+volatile uint32_t measSeq = 0;          // finished measurements
+bool imuOk = false;
 
 // Task woken (FreeRTOS task notification) after every new orientation sample.
 TaskHandle_t sampleListener = nullptr;
@@ -116,95 +129,57 @@ float convertRawGyro(int16_t gRaw) {
   return g;
 }
 
-void zeroIMU() {
-  // Zero the BMI160
-  struct bmi160_sensor_data accel;
-  struct bmi160_sensor_data gyro;
-
-  Serial.println("Zeroing......");
-
-  float sum_X = 0, sum_Y = 0, sum_Z = 0;
-  float sumPitch = 0;
-
-  //uint32_t iterations = 100'000UL;
-  uint32_t iterations = 1000;
-
-  for (uint32_t i = 0; i < iterations; i++) {
-    int8_t rslt = bmi160_get_sensor_data((BMI160_ACCEL_SEL | BMI160_GYRO_SEL), &accel, &gyro, &bmi);
-
-    if (rslt == BMI160_OK) {
-      sum_X += convertRawGyro(gyro.x);
-      sum_Y += convertRawGyro(gyro.y);
-      sum_Z += convertRawGyro(gyro.z);
-
-      // Compute pitch from accelerometer
-      float aX = convertRawAccel(accel.x);
-      float aY = convertRawAccel(accel.y);
-      float aZ = convertRawAccel(accel.z);
-      float accelPitch = atan2(-aZ, sqrt((aY * aY) + (aX * aX))); // Unit: rad
-
-      sumPitch += accelPitch;
-
-      Serial.print("X: "); Serial.print(convertRawGyro(gyro.x) * RAD_TO_DEG);
-      Serial.print(" Y: "); Serial.print(convertRawGyro(gyro.y) * RAD_TO_DEG);
-      Serial.print(" Z: "); Serial.print(convertRawGyro(gyro.z) * RAD_TO_DEG);
-      Serial.print(" Accel Pitch: "); Serial.print(accelPitch * RAD_TO_DEG);
-      Serial.println();
-
-      delay(3);
-    }
+// Called by Task_BMI160 with every good sample.
+void accumulateMeasurement(const float raw[3], float accelG) {
+  if (!measRunning) {
+    if (!measRequested) return;
+    portENTER_CRITICAL(&measLock);
+    measSkip = reqSkip;
+    measTarget = reqTarget;
+    measRequested = false;
+    measRunning = true;
+    portEXIT_CRITICAL(&measLock);
+    measCount = 0;
+    for (int i = 0; i < 3; i++) measSum[i] = measSumSq[i] = 0;
+    measAccel = 0;
   }
-
-  X_Offset = sum_X / (float)iterations;
-  Y_Offset = sum_Y / (float)iterations;
-  Z_Offset = sum_Z / (float)iterations;
-  pitchOffset = sumPitch / (float)iterations;  // Store the reference angle
-
-  {
-    struct bmi160_sensor_data a, g;
-    if (bmi160_get_sensor_data(BMI160_ACCEL_SEL | BMI160_GYRO_SEL, &a, &g, &bmi) == BMI160_OK) {
-      const float x = convertRawAccel(a.x), y = convertRawAccel(a.y), z = convertRawAccel(a.z);
-      DeviceLog::printf("[imu] accel at rest: %.3f g (should be about 1.000)\n", sqrtf(x * x + y * y + z * z));
-    }
+  if (measSkip) { measSkip--; return; }
+  for (int i = 0; i < 3; i++) {
+    const double v = raw[i] * RAD_TO_DEG;
+    measSum[i] += v;
+    measSumSq[i] += v * v;
   }
+  measAccel += accelG;
+  if (++measCount < measTarget) return;
 
-  Serial.print("SUM X: ");Serial.print(sum_X);
-  Serial.print("\tOffset X: "); Serial.print(X_Offset * RAD_TO_DEG); Serial.println(" °/s");
-
-  Serial.print("SUM Y: ");Serial.print(sum_Y);
-  Serial.print("\tOffset Y: "); Serial.print(Y_Offset * RAD_TO_DEG); Serial.println(" °/s");
-
-  Serial.print("SUM Z: ");Serial.print(sum_Z);
-  Serial.print("\tOffset Z: "); Serial.print(Z_Offset * RAD_TO_DEG); Serial.println(" °/s");
-
-  DeviceLog::printf("[imu] gyro offsets X %.2f, Y %.2f, Z %.2f deg/s\n",
-                    X_Offset * RAD_TO_DEG, Y_Offset * RAD_TO_DEG, Z_Offset * RAD_TO_DEG);
-
-  Serial.print("SUM Pitch: ");Serial.print(sumPitch);
-  Serial.print("\tOffset Z: "); Serial.print(pitchOffset * RAD_TO_DEG); Serial.println(" °/s");
+  GyroMeasurement m;
+  m.samples = measCount;
+  m.accelG = (float)(measAccel / measCount);
+  for (int i = 0; i < 3; i++) {
+    const double mean = measSum[i] / measCount;
+    const double var = measSumSq[i] / measCount - mean * mean;
+    m.mean[i] = (float)mean;
+    m.std[i] = (float)sqrt(var > 0 ? var : 0);
+  }
+  portENTER_CRITICAL(&measLock);
+  measResult = m;
+  measRunning = false;
+  measSeq = measSeq + 1;
+  portEXIT_CRITICAL(&measLock);
 }
 
 } // namespace
 
-void initIMU() {
-  // Set CS_BMI as output and make inactive
-  pinMode(CS_BMI, OUTPUT);
-  digitalWrite(CS_BMI, HIGH);
-
-  // Create fspi instance
-  fspi = new SPIClass(FSPI);
-  fspi->begin(FSPI_SCK, FSPI_MISO, FSPI_MOSI);
-
-  // Give the data to the struct
-  bmi.id = 0;                       // Device ID
-  bmi.intf = BMI160_SPI_INTF;       // Use SPI
-  bmi.read = BMI160_SPI_read;       // Read function pointer
-  bmi.write = BMI160_SPI_write;     // Write function pointer
-  bmi.delay_ms = BMI160_DELAY_ms;   // Delay function pointer
-
-  // Initialise the BMI160 by performing a soft reset
+// Soft-resets and configures the BMI160. False if it doesn't answer or the
+// configuration fails.
+static bool configureBmi160() {
+  // Soft reset and chip ID check (0xD1).
+  const int8_t initRslt = bmi160_init(&bmi);
+  if (initRslt != BMI160_OK) {
+    DeviceLog::printf("[imu] BMI160 not found (init %d, chip ID 0x%02X)\n", initRslt, bmi.chip_id);
+    return false;
+  }
   int8_t rslt;
-  rslt = bmi160_init(&bmi);
 
   // Seth the accelerometer configuration
   bmi.accel_cfg.odr = BMI160_ACCEL_ODR_1600HZ;      // Data output rate
@@ -253,33 +228,68 @@ void initIMU() {
                       (readBack & 0x07) == BMI160_GYRO_RANGE_2000_DPS ? " (+-2000 deg/s)" : " - NOT +-2000 deg/s, rates will be scaled wrong!");
   }
 
-  DeviceLog::printf("[imu] BMI160 init %s - zeroing the gyro, keep the robot still\n", rslt == BMI160_OK ? "OK" : "FAILED");
-  //delay(2000);
+  if (rslt != BMI160_OK) {
+    DeviceLog::printf("[imu] BMI160 configuration failed (%d)\n", rslt);
+    return false;
+  }
+  return true;
+}
 
-  flashStatusLED(RGBColour{246, 20, 247}, 3, 150, 850); // 3 Purple Flashes
+// Reads the sensor directly for up to `ms` and returns true once the
+// accelerometer reads a plausible total (0.7-1.3 g: it isn't being thrown
+// around at power-on). An IMU that isn't answering reads all zeros (or all
+// ones), which would look like an upright, motionless robot.
+static bool readingsPlausible(uint32_t ms, float *lastG) {
+  const uint32_t start = millis();
+  float g = 0;
+  do {
+    struct bmi160_sensor_data a, gy;
+    if (bmi160_get_sensor_data(BMI160_ACCEL_SEL | BMI160_GYRO_SEL, &a, &gy, &bmi) == BMI160_OK) {
+      const float x = convertRawAccel(a.x), y = convertRawAccel(a.y), z = convertRawAccel(a.z);
+      g = sqrtf(x * x + y * y + z * z);
+      if (g > 0.7f && g < 1.3f) { *lastG = g; return true; }
+    }
+    delay(2);
+  } while (millis() - start < ms);
+  *lastG = g;
+  return false;
+}
 
-  // struct bmi160_offsets offsets;
-  // struct bmi160_foc_conf foc_conf;
-  // //rslt = bmi160_get_offsets(&offsets, &bmi);
+bool initIMU() {
+  // Set CS_BMI as output and make inactive
+  pinMode(CS_BMI, OUTPUT);
+  digitalWrite(CS_BMI, HIGH);
 
-  // foc_conf.acc_off_en = BMI160_ENABLE;
+  // Create fspi instance
+  fspi = new SPIClass(FSPI);
+  fspi->begin(FSPI_SCK, FSPI_MISO, FSPI_MOSI);
 
-  // foc_conf.foc_acc_x  = BMI160_FOC_ACCEL_POSITIVE_G;
-  // foc_conf.foc_acc_y  = BMI160_FOC_ACCEL_0G;
-  // foc_conf.foc_acc_z  = BMI160_FOC_ACCEL_0G;
+  // Give the data to the struct
+  bmi.id = 0;                       // Device ID
+  bmi.intf = BMI160_SPI_INTF;       // Use SPI
+  bmi.read = BMI160_SPI_read;       // Read function pointer
+  bmi.write = BMI160_SPI_write;     // Write function pointer
+  bmi.delay_ms = BMI160_DELAY_ms;   // Delay function pointer
 
-  // foc_conf.foc_gyr_en = BMI160_ENABLE;
-  // foc_conf.gyro_off_en = BMI160_ENABLE;
-
-  // rslt = bmi160_start_foc(&foc_conf, &offsets, &bmi);
-
-  // Serial.print("X Off: "); Serial.print(offsets.off_gyro_x);
-  // Serial.print("\tY Off: "); Serial.print(offsets.off_gyro_y);
-  // Serial.print("\tZ Off: "); Serial.println(offsets.off_gyro_z);
-
-  zeroIMU();
-
-  flashStatusLED(RGBColour{246, 20, 247}, 3, 150, 150); // 3 Purple Flashes
+  // Checked and retried: at power-on the BMI160 has occasionally not
+  // answered, and then the controller saw a level, motionless robot (all
+  // readings 0) and started balancing while it lay on its back.
+  imuOk = false;
+  for (uint8_t attempt = 1; attempt <= IMU_INIT_TRIES && !imuOk; attempt++) {
+    if (attempt > 1) delay(IMU_INIT_RETRY_MS);
+    float g = 0;
+    if (!configureBmi160()) {
+      DeviceLog::printf("[imu] attempt %u/%u: no BMI160\n", attempt, IMU_INIT_TRIES);
+    } else if (!readingsPlausible(IMU_PLAUSIBLE_WAIT_MS, &g)) {
+      DeviceLog::printf("[imu] attempt %u/%u: accelerometer reads %.3f g, not about 1 g\n", attempt, IMU_INIT_TRIES, g);
+    } else {
+      imuOk = true;
+      DeviceLog::printf("[imu] BMI160 OK (chip ID 0x%02X, accel %.3f g)%s\n", bmi.chip_id, g,
+                        attempt > 1 ? " after a retry" : "");
+    }
+  }
+  if (!imuOk) DeviceLog::println("[imu] ERROR: BMI160 not working - the robot won't balance");
+  return imuOk;
 }
 
 void setImuSampleListener(TaskHandle_t task) {
@@ -292,6 +302,7 @@ void Task_BMI160(void *pvParams) {
   // every iteration made it a plain delay after the work, so the real period
   // was work time + period and the rate drifted below IMUsampleRate.)
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  bool first = true; // start the angles from the accelerometer, not from 0
 
   while (1) {
 
@@ -300,17 +311,19 @@ void Task_BMI160(void *pvParams) {
 
     uint8_t rslt = bmi160_get_sensor_data((BMI160_ACCEL_SEL | BMI160_GYRO_SEL), &accel, &gyro, &bmi);
 
-
+    // Raw rates [rad/s], offsets not yet removed.
+    const float rawGyro[3] = { convertRawGyro(gyro.x), convertRawGyro(gyro.y), convertRawGyro(gyro.z) };
+    const float offX = gyroOffset[0], offY = gyroOffset[1], offZ = gyroOffset[2];
 
     // Get the angular velocities in rad/s
-    theta_dot[0] = -(convertRawGyro(gyro.x) - X_Offset); // Positive is clockwise
-    theta_dot[1] = -(convertRawGyro(gyro.y) - Y_Offset); // Positive is forwards
-    theta_dot[2] = (convertRawGyro(gyro.z) - Z_Offset);  // Positive is clockwise
+    theta_dot[0] = -(rawGyro[0] - offX); // Positive is clockwise
+    theta_dot[1] = -(rawGyro[1] - offY); // Positive is forwards
+    theta_dot[2] = (rawGyro[2] - offZ);  // Positive is clockwise
 
 
 
     uint32_t curMicros_gyro = micros();
-    float dt = (curMicros_gyro - prevMicros_gyro) / 1e6f;
+    float dt = first ? 0.0f : (curMicros_gyro - prevMicros_gyro) / 1e6f;
 
     //Integrate the angular velocity over dt
     gyroYaw += (theta_dot[0] * dt);
@@ -321,10 +334,11 @@ void Task_BMI160(void *pvParams) {
     float aX = convertRawAccel(accel.x);
     float aY = convertRawAccel(accel.y);
     float aZ = convertRawAccel(accel.z);
+    if (rslt == BMI160_OK) accumulateMeasurement(rawGyro, sqrtf(aX * aX + aY * aY + aZ * aZ));
 
-    imuGyro[0] = convertRawGyro(gyro.x) - X_Offset;
-    imuGyro[1] = convertRawGyro(gyro.y) - Y_Offset;
-    imuGyro[2] = convertRawGyro(gyro.z) - Z_Offset;
+    imuGyro[0] = rawGyro[0] - offX;
+    imuGyro[1] = rawGyro[1] - offY;
+    imuGyro[2] = rawGyro[2] - offZ;
     imuAccel[0] = aX;
     imuAccel[1] = aY;
     imuAccel[2] = aZ;
@@ -346,8 +360,20 @@ void Task_BMI160(void *pvParams) {
     // // Complementary Filter
     // pitch = ((alpha * gyroPitch) + ((1 - alpha) * accelPitch)) + pitchOffset;
 
-    pitch = (alpha * pitch) + ((1 - alpha) * accelPitch);
-    roll = ((alpha * roll) + ((1 - alpha) * accelRoll));
+    if (first) {
+      // The filter would take a few seconds (several times its ~1 s time
+      // constant) to come from 0 to the real angle, which is why setup()
+      // used to wait 3 s before starting the controller. Only from a
+      // plausible reading (about 1 g): a not-yet-valid sample (all zeros)
+      // would start it at 0 deg, i.e. upright.
+      pitch = accelPitch;
+      roll = accelRoll;
+      const float g = sqrtf(aX * aX + aY * aY + aZ * aZ);
+      if (rslt == BMI160_OK && g > 0.7f && g < 1.3f) first = false;
+    } else {
+      pitch = (alpha * pitch) + ((1 - alpha) * accelPitch);
+      roll = ((alpha * roll) + ((1 - alpha) * accelRoll));
+    }
 
     // yaw = filter.getYawRadians();
     // pitch = filter.getPitchRadians();
@@ -418,4 +444,66 @@ void Task_outputGyroData(void *pvParams) {
 
     vTaskDelay(pdMS_TO_TICKS(50));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Gyro offsets and measurements
+// ---------------------------------------------------------------------------
+
+float GyroMeasurement::maxStd() const {
+  return fmaxf(std[0], fmaxf(std[1], std[2]));
+}
+
+bool imuInitOk() { return imuOk; }
+
+void setGyroOffsets(const float dps[3]) {
+  for (int i = 0; i < 3; i++) gyroOffset[i] = dps[i] * DEG_TO_RAD;
+}
+
+void getGyroOffsets(float dps[3]) {
+  for (int i = 0; i < 3; i++) dps[i] = gyroOffset[i] * RAD_TO_DEG;
+}
+
+bool startGyroMeasurement(uint32_t ms, uint32_t settleMs) {
+  const uint32_t rate = IMUsampleRate ? IMUsampleRate : 1;
+  uint32_t target = ms * rate / 1000;
+  if (target < 10) target = 10;
+  if (target > 60000) target = 60000;
+  uint32_t skip = settleMs * rate / 1000;
+  if (skip > 60000) skip = 60000;
+  bool ok = false;
+  portENTER_CRITICAL(&measLock);
+  if (!measRequested && !measRunning) {
+    reqTarget = (uint16_t)target;
+    reqSkip = (uint16_t)skip;
+    measRequested = true;
+    ok = true;
+  }
+  portEXIT_CRITICAL(&measLock);
+  return ok;
+}
+
+bool gyroMeasurementBusy() { return measRequested || measRunning; }
+
+uint32_t gyroMeasurementCount() { return measSeq; }
+
+GyroMeasurement lastGyroMeasurement() {
+  portENTER_CRITICAL(&measLock);
+  const GyroMeasurement m = measResult;
+  portEXIT_CRITICAL(&measLock);
+  return m;
+}
+
+bool measureGyro(uint32_t ms, uint32_t settleMs, GyroMeasurement &out) {
+  const uint32_t before = gyroMeasurementCount();
+  if (!startGyroMeasurement(ms, settleMs)) return false;
+  // Generous: the sample rate can be lowered to 200 Hz from the web page.
+  const uint32_t timeoutMs = 3 * (ms + settleMs) + 500;
+  const uint32_t start = millis();
+  while (gyroMeasurementCount() == before) {
+    if (millis() - start > timeoutMs) return false;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  out = lastGyroMeasurement();
+  return true;
 }

@@ -19,6 +19,7 @@
 #include "DeviceLog.h"
 #include "DriveInput.h"
 #include "Gamepad.h"
+#include "GyroCal.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
@@ -176,12 +177,20 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
     doc["type"] = "drivers";
     doc["job"] = driverJobText();
     doc["balancing"] = balanceState == BalanceState::Balancing;
+    doc["tipped"] = balanceState == BalanceState::Tipped;
+    doc["cogCal"] = driverCalibrating();
+    doc["cogTabV"] = cogTablesVersion(); // a new read finished: the page fetches /cogging.csv
+    doc["cogTab"] = (cogTableReady(MOTOR_LEFT) ? 1 : 0) | (cogTableReady(MOTOR_RIGHT) ? 2 : 0);
     JsonArray heard = doc["heard"].to<JsonArray>(); // node IDs heard on the bus (0 = old "right" board)
     const uint16_t bits = nodesHeard();
     for (int n = 0; n <= NODE_ID_MAX; n++) if (bits & (1u << n)) heard.add(n);
     JsonArray arr = doc["d"].to<JsonArray>();
     for (int s = 0; s < 2; s++) {
-        const DriverConfigView c = getDriverConfig((MotorSide)s);
+        // Not const: ArduinoJson 7 keeps a pointer to a `const char[N]` (it takes
+        // it for a string literal) instead of copying it, and `c` is reused for
+        // the second driver, so both showed the right driver's model name,
+        // serial number and result text.
+        DriverConfigView c = getDriverConfig((MotorSide)s);
         const MotorDriverInfo m = getMotorDriverInfo((MotorSide)s);
         JsonObject o = arr.add<JsonObject>();
         o["link"] = motorLinkName(m.link);
@@ -193,6 +202,7 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
             o["fw"] = String(c.fwMajor) + "." + c.fwMinor + "." + c.fwPatch;
             o["kb"] = c.imageKB;
             if (c.modelKnown && c.model[0]) o["model"] = c.model;
+            if (c.serialKnown) o["serial"] = c.serial;
         }
         if (c.activeKnown) {
             JsonObject a = o["active"].to<JsonObject>();
@@ -217,6 +227,20 @@ void sendDrivers(AsyncWebSocketClient *client = nullptr) {
             l["tf"] = c.curTf;
             l["hz"] = c.focHz;
         }
+        if (c.cogKnown) {
+            JsonObject g = o["cog"].to<JsonObject>();
+            g["st"] = c.cogState;      // COG_STATE_*
+            g["det"] = c.cogDetail;    // progress % / failure code
+            g["fl"] = c.cogFlags;      // COG_FLAG_*
+            g["amp"] = c.cogAmpMa;
+            g["fric"] = c.cogFricMa;
+            if (c.cogResultKnown) {
+                g["cov"] = c.cogCoverage;
+                g["q"] = c.cogQuality;
+                g["err"] = c.cogMaxErr / 10.0f; // mrad (25.5 = more)
+                if (c.cogNoise) g["noise"] = c.cogNoise / 2.0f; // mA
+            }
+        }
         o["calUsed"] = (m.flags & DRIVER_FLAG_CALIBRATION_USED) != 0;
         o["result"] = c.result;
     }
@@ -233,6 +257,23 @@ void sendGamepad(AsyncWebSocketClient *client = nullptr) {
     doc["left"] = g.pairSecondsLeft;
     doc["active"] = g.inputActive;
     if (g.battery >= 0) doc["battery"] = g.battery;
+    sendJson(doc, client);
+}
+
+// Gyro offsets in use and saved (Tune tab, IMU panel).
+void sendGyro(AsyncWebSocketClient *client = nullptr) {
+    const GyroCal::Status g = GyroCal::status();
+    JsonDocument doc;
+    doc["type"] = "gyro";
+    JsonArray off = doc["off"].to<JsonArray>();
+    for (float v : g.offset) off.add(roundf(v * 1000.0f) / 1000.0f);
+    if (g.haveSaved) {
+        JsonArray sv = doc["saved"].to<JsonArray>();
+        for (float v : g.saved) sv.add(roundf(v * 1000.0f) / 1000.0f);
+    }
+    doc["source"] = GyroCal::sourceName(g.source);
+    doc["noise"] = roundf(g.noise * 100.0f) / 100.0f;
+    doc["busy"] = g.busy;
     sendJson(doc, client);
 }
 
@@ -363,6 +404,9 @@ void handleMessage(const uint8_t *data, size_t len) {
         if (!ok) sendNotice("Couldn't start recording (out of memory, or a download is running)", false);
     } else if (!strcmp(cmd, "captureCancel")) {
         Capture::cancel();
+    } else if (!strcmp(cmd, "gyroRezero")) {
+        const char *err = GyroCal::requestRezero();
+        sendNotice(err ? err : "Re-zeroing the gyro - keep the robot still", !err);
     } else if (!strcmp(cmd, "motorRetry")) {
         resetMotorStartAttempts();
         DeviceLog::println("[web] motor start attempts reset");
@@ -377,6 +421,16 @@ void handleMessage(const uint8_t *data, size_t len) {
         } else if (!strcmp(op, "currentLoop")) {
             // Both drivers; tf arrives in seconds.
             err = requestCurrentLoop(doc["p"] | -1.0f, doc["i"] | -1.0f, doc["tf"] | -1.0f);
+        } else if (!strncmp(op, "cog", 3)) {
+            // Anti-cogging, both drivers.
+            if      (!strcmp(op, "cogCal"))    err = requestCogging(CogAction::Calibrate);
+            else if (!strcmp(op, "cogRefine")) err = requestCogging(CogAction::Refine);
+            else if (!strcmp(op, "cogAbort"))  err = requestCogging(CogAction::Abort);
+            else if (!strcmp(op, "cogClear"))  err = requestCogging(CogAction::Clear);
+            else if (!strcmp(op, "cogOn"))     err = requestCogging(CogAction::CompOn);
+            else if (!strcmp(op, "cogOff"))    err = requestCogging(CogAction::CompOff);
+            else if (!strcmp(op, "cogSlots"))  err = requestCogging(CogAction::CompSlots);
+            else if (!strcmp(op, "cogRead"))   err = requestCogTableRead();
         } else if (side == 0 || side == 1) {
             const MotorSide sd = (MotorSide)side;
             const float v = doc["value"] | 0.0f;
@@ -441,6 +495,7 @@ void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type
         sendWifi(client);
         sendDrivers(client);
         sendGamepad(client);
+        sendGyro(client);
         sendLog(0, client); // backlog
     } else if (type == WS_EVT_DISCONNECT) {
         DeviceLog::printf("[ws] client #%lu disconnected\n", (unsigned long)client->id());
@@ -538,6 +593,39 @@ void setupRoutes() {
         char disposition[96];
         snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s-capture-%lu.csv\"",
                  robotName(), (unsigned long)(millis() / 1000));
+        res->addHeader("Content-Disposition", disposition);
+        res->addHeader("Cache-Control", "no-store");
+        req->send(res);
+    });
+
+    // The drivers' anti-cogging tables as last read (Drivers tab: Read tables).
+    server.on("/cogging.csv", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!cogTableReady(MOTOR_LEFT) && !cogTableReady(MOTOR_RIGHT)) {
+            req->send(409, "text/plain", "No anti-cogging tables read yet (Drivers tab: Read tables)");
+            return;
+        }
+        auto line = std::make_shared<int>(-1); // -1 = header
+        AsyncWebServerResponse *res = req->beginChunkedResponse("text/csv",
+            [line](uint8_t *buf, size_t maxLen, size_t) -> size_t {
+                size_t n = 0;
+                while (*line < DRIVER_COG_BINS && maxLen - n >= 64) {
+                    int w;
+                    if (*line < 0) {
+                        w = snprintf((char *)buf + n, maxLen - n, "bin,deg,left_mA,right_mA\n");
+                    } else {
+                        const int b = *line;
+                        char l[16] = "", r[16] = "";
+                        if (cogTableReady(MOTOR_LEFT))  snprintf(l, sizeof(l), "%.2f", cogTableAmps(MOTOR_LEFT, b) * 1000.0f);
+                        if (cogTableReady(MOTOR_RIGHT)) snprintf(r, sizeof(r), "%.2f", cogTableAmps(MOTOR_RIGHT, b) * 1000.0f);
+                        w = snprintf((char *)buf + n, maxLen - n, "%d,%.3f,%s,%s\n", b, (b + 0.5f) * 360.0f / DRIVER_COG_BINS, l, r);
+                    }
+                    n += w;
+                    (*line)++;
+                }
+                return n;
+            });
+        char disposition[96];
+        snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s-cogging.csv\"", robotName());
         res->addHeader("Content-Disposition", disposition);
         res->addHeader("Cache-Control", "no-store");
         req->send(res);
@@ -653,8 +741,10 @@ void networkTask(void *) {
     uint32_t seenWifi = WifiManager::version();
     uint32_t seenDrivers = driverConfigVersion(), lastDriversMs = 0;
     bool sentBalancing = false;
+    bool sentTipped = false;
     uint16_t sentHeard = 0;
     uint32_t seenGamepad = Gamepad::version(), lastGamepadMs = 0;
+    uint32_t seenGyro = GyroCal::version(), seenGyroSettings = Settings::version(), lastGyroMs = 0;
     uint32_t sentLogSeq = DeviceLog::latest(); // new clients get the backlog on connect
 
     for (;;) {
@@ -667,6 +757,11 @@ void networkTask(void *) {
         Battery::update(Settings::value("battCutoff"));
         serviceSetPointTrim();
         serviceSelfRight();
+        {
+            String msg;
+            bool ok;
+            if (GyroCal::serviceRezero(msg, ok)) sendNotice(msg, ok);
+        }
 
         if (ws.count()) {
             const uint32_t telemetryMs = (uint32_t)Settings::value("telemetryMs");
@@ -690,10 +785,12 @@ void networkTask(void *) {
             // which enables/disables its buttons), at most every 250 ms.
             const uint32_t dv = driverConfigVersion();
             const bool bal = balanceState == BalanceState::Balancing;
+            const bool tip = balanceState == BalanceState::Tipped; // anti-cogging calibration needs it lying down
             const uint16_t heard = nodesHeard();
-            if ((dv != seenDrivers || bal != sentBalancing || heard != sentHeard) && now - lastDriversMs >= WIFI_BROADCAST_MIN_MS) {
+            if ((dv != seenDrivers || bal != sentBalancing || tip != sentTipped || heard != sentHeard) && now - lastDriversMs >= WIFI_BROADCAST_MIN_MS) {
                 seenDrivers = dv;
                 sentBalancing = bal;
+                sentTipped = tip;
                 sentHeard = heard;
                 lastDriversMs = now;
                 sendDrivers();
@@ -703,6 +800,15 @@ void networkTask(void *) {
                 seenGamepad = gv;
                 lastGamepadMs = now;
                 sendGamepad();
+            }
+            // Gyro: on a change, or when the settings change (the saved offsets
+            // can change through Defaults / Revert / import + Save).
+            const uint32_t gyv = GyroCal::version();
+            if ((gyv != seenGyro || sv != seenGyroSettings) && now - lastGyroMs >= WIFI_BROADCAST_MIN_MS) {
+                seenGyro = gyv;
+                seenGyroSettings = sv;
+                lastGyroMs = now;
+                sendGyro();
             }
             const uint32_t wv = WifiManager::version();
             if (wv != seenWifi && now - lastWifiMs >= WIFI_BROADCAST_MIN_MS) {
