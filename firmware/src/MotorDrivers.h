@@ -4,9 +4,10 @@
 
 // Tracks the two BLDC motor drivers from their CAN status frames and starts
 // FOC on them automatically:
-//  - a driver that reports IDLE (or FAULT) gets CMD_START_FOC, one driver at a
-//    time, so a driver that resets later (watchdog, brown-out) is restarted
-//    instead of sitting idle;
+//  - a driver that reports IDLE (or FAULT) gets CMD_START_FOC, so a driver
+//    that resets later (watchdog, brown-out) is restarted instead of sitting
+//    idle. Drivers with a stored alignment start together; one without starts
+//    on its own (its alignment turns the wheel and draws more current);
 //  - a FAULT start is retried up to MOTOR_MAX_START_ATTEMPTS times, then left
 //    alone (it would jolt the wheel on every attempt) until
 //    resetMotorStartAttempts() or a reboot.
@@ -176,6 +177,10 @@ bool waitForMotorsReady(uint32_t timeoutMs);
 
 // Allows a driver that has given up (GaveUp) to be started again.
 void resetMotorStartAttempts();
+
+// The supervisor only sends START_FOC once this has been called (setup()
+// calls it after the gyro calibration, which needs the wheels still).
+void allowMotorStarts();
 
 const char *motorLinkName(MotorLink link);
 const char *driverErrorName(uint8_t code);

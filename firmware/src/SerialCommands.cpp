@@ -5,6 +5,7 @@
 #include "RobotParams.h"
 #include "CANConfig.h"
 #include "MotorDrivers.h"
+#include "Boot.h"
 #include "Settings.h"
 
 #include <strings.h>
@@ -84,6 +85,11 @@ void processSerialCommands() {
             const ParamDef *defs = Settings::params(n);
             for (size_t i = 0; i < n; i++) Serial.printf("  %-12s %10g   %s\n", defs[i].key, Settings::valueAt(i), defs[i].label);
             Serial.println(Settings::isDirty() ? "(unsaved changes - SAVE to keep them)" : "(all saved)");
+        }
+
+        // Boot timing (also logged once at the end of setup())
+        else if (!strcasecmp(outArray[0], "BOOT")) {
+            Boot::printSummary();
         }
 
         else if (!strcasecmp(outArray[0], "SAVE")) {

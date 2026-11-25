@@ -19,6 +19,7 @@
 #include "DeviceLog.h"
 #include "DriveInput.h"
 #include "Gamepad.h"
+#include "GyroCal.h"
 #include "LQRControl.h"
 #include "MotorDrivers.h"
 #include "RobotParams.h"
@@ -259,6 +260,23 @@ void sendGamepad(AsyncWebSocketClient *client = nullptr) {
     sendJson(doc, client);
 }
 
+// Gyro offsets in use and saved (Tune tab, IMU panel).
+void sendGyro(AsyncWebSocketClient *client = nullptr) {
+    const GyroCal::Status g = GyroCal::status();
+    JsonDocument doc;
+    doc["type"] = "gyro";
+    JsonArray off = doc["off"].to<JsonArray>();
+    for (float v : g.offset) off.add(roundf(v * 1000.0f) / 1000.0f);
+    if (g.haveSaved) {
+        JsonArray sv = doc["saved"].to<JsonArray>();
+        for (float v : g.saved) sv.add(roundf(v * 1000.0f) / 1000.0f);
+    }
+    doc["source"] = GyroCal::sourceName(g.source);
+    doc["noise"] = roundf(g.noise * 100.0f) / 100.0f;
+    doc["busy"] = g.busy;
+    sendJson(doc, client);
+}
+
 void sendNotice(const String &text, bool ok = true) {
     JsonDocument doc;
     doc["type"] = "notice";
@@ -386,6 +404,9 @@ void handleMessage(const uint8_t *data, size_t len) {
         if (!ok) sendNotice("Couldn't start recording (out of memory, or a download is running)", false);
     } else if (!strcmp(cmd, "captureCancel")) {
         Capture::cancel();
+    } else if (!strcmp(cmd, "gyroRezero")) {
+        const char *err = GyroCal::requestRezero();
+        sendNotice(err ? err : "Re-zeroing the gyro - keep the robot still", !err);
     } else if (!strcmp(cmd, "motorRetry")) {
         resetMotorStartAttempts();
         DeviceLog::println("[web] motor start attempts reset");
@@ -474,6 +495,7 @@ void onWsEvent(AsyncWebSocket *, AsyncWebSocketClient *client, AwsEventType type
         sendWifi(client);
         sendDrivers(client);
         sendGamepad(client);
+        sendGyro(client);
         sendLog(0, client); // backlog
     } else if (type == WS_EVT_DISCONNECT) {
         DeviceLog::printf("[ws] client #%lu disconnected\n", (unsigned long)client->id());
@@ -722,6 +744,7 @@ void networkTask(void *) {
     bool sentTipped = false;
     uint16_t sentHeard = 0;
     uint32_t seenGamepad = Gamepad::version(), lastGamepadMs = 0;
+    uint32_t seenGyro = GyroCal::version(), seenGyroSettings = Settings::version(), lastGyroMs = 0;
     uint32_t sentLogSeq = DeviceLog::latest(); // new clients get the backlog on connect
 
     for (;;) {
@@ -734,6 +757,11 @@ void networkTask(void *) {
         Battery::update(Settings::value("battCutoff"));
         serviceSetPointTrim();
         serviceSelfRight();
+        {
+            String msg;
+            bool ok;
+            if (GyroCal::serviceRezero(msg, ok)) sendNotice(msg, ok);
+        }
 
         if (ws.count()) {
             const uint32_t telemetryMs = (uint32_t)Settings::value("telemetryMs");
@@ -772,6 +800,15 @@ void networkTask(void *) {
                 seenGamepad = gv;
                 lastGamepadMs = now;
                 sendGamepad();
+            }
+            // Gyro: on a change, or when the settings change (the saved offsets
+            // can change through Defaults / Revert / import + Save).
+            const uint32_t gyv = GyroCal::version();
+            if ((gyv != seenGyro || sv != seenGyroSettings) && now - lastGyroMs >= WIFI_BROADCAST_MIN_MS) {
+                seenGyro = gyv;
+                seenGyroSettings = sv;
+                lastGyroMs = now;
+                sendGyro();
             }
             const uint32_t wv = WifiManager::version();
             if (wv != seenWifi && now - lastWifiMs >= WIFI_BROADCAST_MIN_MS) {

@@ -9,11 +9,13 @@
 // Drawing runs in its own low-priority task on core 0, so the I2C transfers
 // (~25 ms per frame) never hold up the control tasks on core 1.
 
-// Initialises the display and shows a boot message. Returns false (and the
+// While booting (Boot::active()) the boot screen is shown instead: step
+// number and name, a detail line, a progress bar and the web address.
+//
+// Initialises the display and shows the boot screen. Returns false (and the
 // rest of the firmware carries on without a display) if it doesn't respond.
+// Call it first thing, then start Task_display, which draws from then on
+// (only that task may draw: the display driver isn't thread-safe).
 bool initDisplay();
-
-// One-line boot progress message (only before Task_display starts).
-void displayBootMessage(const char *line);
 
 void Task_display(void *pvParams);

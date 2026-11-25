@@ -46,6 +46,9 @@ struct DriverTrack {
 
 DriverTrack drivers[2];
 
+// Set by allowMotorStarts(): until then no START_FOC is sent.
+volatile bool startsAllowed = false;
+
 // Node IDs in use for left / right (see driverNode()).
 volatile uint8_t activeNode[2] = { 1, 2 };
 
@@ -146,6 +149,10 @@ bool waitForMotorsReady(uint32_t timeoutMs) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     return motorsReady();
+}
+
+void allowMotorStarts() {
+    startsAllowed = true;
 }
 
 void resetMotorStartAttempts() {
@@ -1079,6 +1086,7 @@ const char *requestSwapDriverSides() {
 void Task_motorSupervisor(void *pvParams) {
     uint32_t lastStartAttemptMs[2] = { 0, 0 };
     bool startedOnce[2] = { false, false };
+    bool alignHintLogged[2] = { false, false };
 
     while (1) {
         const uint32_t now = millis();
@@ -1109,15 +1117,21 @@ void Task_motorSupervisor(void *pvParams) {
             }
         }
 
-        // Only one driver starting at a time: alignment draws current and
-        // moves the wheel, so don't do both at once.
-        const bool anyPending = drivers[0].startPending || drivers[1].startPending;
-        if (!anyPending) {
+        // A driver without a stored alignment aligns at every start: it turns
+        // its wheel and draws more current for a few seconds, so it starts on
+        // its own. Drivers with a stored alignment (only a short current-sense
+        // check, no wheel turn) start together.
+        auto quickStart = [](const DriverTrack &d) { return (d.flags & DRIVER_FLAG_CALIBRATION_USED) != 0; };
+        const bool slowPending = (drivers[0].startPending && !quickStart(drivers[0])) ||
+                                 (drivers[1].startPending && !quickStart(drivers[1]));
+        if (startsAllowed && !slowPending) {
             for (int s = 0; s < 2; s++) {
                 DriverTrack &d = drivers[s];
                 const MotorLink link = linkOf(d, now);
                 if (link != MotorLink::Idle && link != MotorLink::Fault) continue;
                 if (startedOnce[s] && (now - lastStartAttemptMs[s]) < START_RETRY_INTERVAL_MS) continue;
+                const bool quick = quickStart(d);
+                if (!quick && (drivers[0].startPending || drivers[1].startPending)) continue;
 
                 d.startAttempts = d.startAttempts + 1;
                 d.startPending = true;
@@ -1125,8 +1139,13 @@ void Task_motorSupervisor(void *pvParams) {
                 lastStartAttemptMs[s] = now;
                 startedOnce[s] = true;
                 DeviceLog::printf("[motor] %s driver: sending START_FOC (attempt %u)\n", kSideName[s], d.startAttempts);
+                if (!quick && !alignHintLogged[s]) {
+                    alignHintLogged[s] = true;
+                    DeviceLog::printf("[motor] %s driver has no stored alignment: it aligns (wheel turns) at every "
+                                      "start. Re-run alignment (Drivers tab) stores one; boots faster.\n", kSideName[s]);
+                }
                 sendStartFOC(commandId(s));
-                break; // one at a time
+                if (!quick) break; // starts on its own
             }
         }
 

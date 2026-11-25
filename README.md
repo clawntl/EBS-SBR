@@ -167,7 +167,7 @@ The files are written to `tools/qr-codes/` (git-ignored, as they contain the rob
 
 Joining the network opens the web page automatically on most phones (captive portal); otherwise browse to `http://192.168.71.1/`. (The address isn't the ESP32 default 192.168.4.1, because some home routers use that range.) The page updates live over a WebSocket and has five tabs:
 
-- **Tune:** live state, tilt, set point, wheel speed, loop rate, both motor drivers' state and the battery level; a battery chart (average of the two drivers' readings, optionally each driver's) and a telemetry chart (tilt, LQR and motor currents, tilt rate, wheel speed) over 10 s to 1 h; every tunable setting, with an explanation for each, and **Save to flash / Revert to saved / Factory defaults**; and **Record**, which captures every control step (5-60 s, now or when it next starts balancing) for download as CSV, with the settings in use in its header.
+- **Tune:** live state, tilt, set point, wheel speed, loop rate, both motor drivers' state and the battery level; a battery chart (average of the two drivers' readings, optionally each driver's) and a telemetry chart (tilt, LQR and motor currents, tilt rate, wheel speed) over 10 s to 1 h; every tunable setting, with an explanation for each, and **Save to flash / Revert to saved / Factory defaults**; and **Record**, which captures every control step (5-60 s, now or when it next starts balancing) for download as CSV, with the settings in use in its header. The IMU panel shows the gyro offsets in use and has **Re-zero gyro** (see Start-up below).
 - **Control:** the touch joystick and gamepad selection, Pause, and a live status readout. The browser's Gamepad API needs Chrome or Edge here: Firefox only allows it on HTTPS pages.
 - **WiFi:** the **Access point only** switch (on by default, for open days), saved networks (up to 5), a scan of networks in range, and the connection status. With Access point only off, the robot joins the strongest saved network at power-on and falls back to its own access point when none is available. On a home network it's at `http://balancebot-xxxxxx.local/`.
 - **Log:** recent messages from the robot (start-up, motor drivers, IMU, WiFi, battery), with their uptime.
@@ -178,6 +178,18 @@ Drive input is zeroed if the page stops sending for 300 ms, and straight away if
 ### Battery
 
 The controller has no voltage sensing of its own: both motor drivers measure their supply (the same 3S Li-ion pack) and report it in their CAN status heartbeat. This needs BLDC-Driver firmware that fills in the voltage field (older firmware sends 0, shown as "no reading"). Below the **Battery cutoff** setting (9.6 V by default, 3.2 V per cell; 0 turns it off) the robot stops balancing until the voltage recovers by 0.3 V.
+
+### Start-up
+
+The OLED shows each boot step (`5/7 Calibrating gyro`) with a progress bar, and each step is logged with its time (`[boot 05/07 +0.84 s] ...`, on serial and in the Log tab), followed by a summary of how long each took (serial command `BOOT` prints it again).
+
+Leave the robot still for the first second or two. The gyro is calibrated before the motor drivers start, because their start moves the wheels:
+
+- **Saved offsets** (from **Re-zero gyro**): a 0.25 s check. If the robot is still and the reading is within 0.5 deg/s of the saved offsets, that reading is used. Otherwise it does a full 1 s zero.
+- **No saved offsets** (first boot, or after **Factory defaults** + Save): a full zero, which is then saved.
+- If the robot keeps moving, it falls back to the saved offsets.
+
+The status LED flashes purple meanwhile. The saved offsets are hidden settings (`gyroOffX/Y/Z`), included in settings exports but not ticked by default on import, since they belong to one robot's IMU. Drivers with a stored alignment start together; a driver without one aligns at every start, which is slower (the log says so).
 
 ## Tuning over serial
 
@@ -194,6 +206,7 @@ The controller board accepts commands at 115200 baud, one per line:
 | `SAVE`       | Save the settings to flash                       |
 | `MS`         | Print each motor driver's link state, flags, start attempts and last error |
 | `MR`         | Reset start attempts so a driver that gave up is tried again |
+| `BOOT`       | Print how long each boot step took               |
 
 Changes made over serial show up on the web page too. Without a value, a command prints the current one. Default values, ranges and help texts for every setting live in [`firmware/src/Settings.cpp`](firmware/src/Settings.cpp).
 

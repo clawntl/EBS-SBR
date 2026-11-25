@@ -275,6 +275,20 @@ const ParamDef kParams[] = {
      "How often live data is sent to this page. For a detailed log of every control step use "
      "Record instead.",
      [](float) {}, 0},
+
+    // ---- Gyro offsets (set by Re-zero gyro, Tune tab IMU panel) ----------------------
+    // The reference the boot-time gyro check compares against (src/GyroCal.cpp).
+    // Changing them here doesn't change the offsets in use until the next boot.
+    // All three 0 = none saved: the next boot does a full zero and saves it.
+    {"gyroOffX", "Gyro offset X (deg/s)", "IMU", 0.0f, -20.0f, 20.0f, 0.001f, false,
+     "Saved gyro offset, X axis. Set by Re-zero gyro (Tune tab, IMU panel).",
+     [](float) {}, PARAM_FLAG_HIDDEN},
+    {"gyroOffY", "Gyro offset Y (deg/s)", "IMU", 0.0f, -20.0f, 20.0f, 0.001f, false,
+     "Saved gyro offset, Y axis. Set by Re-zero gyro (Tune tab, IMU panel).",
+     [](float) {}, PARAM_FLAG_HIDDEN},
+    {"gyroOffZ", "Gyro offset Z (deg/s)", "IMU", 0.0f, -20.0f, 20.0f, 0.001f, false,
+     "Saved gyro offset, Z axis. Set by Re-zero gyro (Tune tab, IMU panel).",
+     [](float) {}, PARAM_FLAG_HIDDEN},
 };
 constexpr size_t kParamCount = sizeof(kParams) / sizeof(kParams[0]);
 

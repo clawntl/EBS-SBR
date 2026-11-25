@@ -330,9 +330,10 @@
           <div class="legend" id="legend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
         </div>
         <div class="panel">
-          <h2>IMU (raw axes)</h2>
+          <h2>IMU (raw axes) <button id="gyroRezeroBtn" class="small" disabled>Re-zero gyro</button></h2>
           <div class="chart-wrap short"><canvas id="imuChart"></canvas></div>
           <div class="legend" id="imuLegend"><span><span class="swatch shade-rec"></span> Recorded</span></div>
+          <p class="muted" id="gyroInfo" style="margin:8px 0 0">Gyro offsets: -</p>
           <p class="muted" style="margin:8px 0 0;font-size:0.8rem">The span and Pause apply to all the charts. History covers
             the time this page has been open (up to 1 hour); over 1 min, each point is a 1 s average with its min-max range shaded.
             The battery voltage comes from the two motor drivers, which share the pack.</p>
@@ -629,8 +630,9 @@
             <tr><td>Left</td><td id="iDrvL">-</td></tr>
             <tr><td>Right</td><td id="iDrvR">-</td></tr>
           </table>
-          <p class="muted">The controller starts FOC on each driver in turn (the wheel twitches during its alignment,
-            unless the driver has a stored alignment), and restarts a driver that resets. After 3 failed starts it
+          <p class="muted">The controller starts FOC on the drivers once the gyro is calibrated: together if both have a
+            stored alignment, otherwise one at a time (the wheel turns during its alignment, and booting takes longer),
+            and restarts a driver that resets. After 3 failed starts it
             gives up; <b>Retry motor start</b> (Tune tab) lets it try again.</p>
         </div>
       </div>
@@ -638,8 +640,9 @@
         <div class="panel">
           <h2>Starting up</h2>
           <table class="ref">
-            <tr><td>Power on</td><td>Leave it lying still. WiFi comes up within a few seconds, then the motor drivers
-              start, then the gyro is zeroed (status LED: 3 slow purple flashes, then 3 quick ones when done).</td></tr>
+            <tr><td>Power on</td><td>Leave it lying still for the first second or two: the gyro is checked against the
+              saved offsets, or zeroed (status LED flashing purple), before the motor drivers start. The OLED shows each
+              boot step; WiFi comes up meanwhile, then the motors start and it's ready within a few seconds.</td></tr>
             <tr><td>Balancing</td><td>Stand it upright and hold it still for a moment: it starts once it's within the
               start angle of the set point and steady, then balances until it tips past the cut-out angle. Lay it down
               (or let it fall) and the motors switch off. If the wheels spin up (lifted, or after a crash) it stops
@@ -647,7 +650,7 @@
             <tr><td>Pause</td><td>Holds the motors at 0 A until resumed (not saved: it's balancing again after a restart).</td></tr>
             <tr><td>Low battery</td><td>Below the battery cutoff (Tune tab, System) it stops balancing until the pack
               is charged or swapped.</td></tr>
-            <tr><td>OLED</td><td>Shows the state, tilt, set point, motor currents and driver states, or a fault
+            <tr><td>OLED</td><td>While booting: the step it's on, with a progress bar. Then shows the state, tilt, set point, motor currents and driver states, or a fault
               screen naming the problem.</td></tr>
           </table>
         </div>
@@ -811,6 +814,7 @@ let ws = null;
 let retryDelay = 500, retryTimer = null, lastMsg = 0;
 let telemetryMs = 50;
 let robotName = "";
+let gyroBusy = false;     // a gyro re-zero is running (from the "gyro" message)
 
 const isOpen = () => !!ws && ws.readyState === WebSocket.OPEN;
 
@@ -819,6 +823,7 @@ function setConnected(on, text) {
   $("statusText").textContent = text;
   for (const id of ["saveBtn", "loadBtn", "defaultsBtn", "pauseBtn", "pauseBtn2", "wifiScanBtn", "wifiConnectBtn",
                     "wifiAddBtn", "capBtn", "apOnly", "selfRightBtn", "srPushBtn", "exportBtn", "importBtn"]) $(id).disabled = !on;
+  $("gyroRezeroBtn").disabled = !on || gyroBusy;
   $("joystickPad").classList.toggle("disabled", !on);
   if (on) { updateSaveButton(); if (wifi) renderWifi(wifi, true); }
 }
@@ -1189,7 +1194,7 @@ function showImport(data, filename) {
       td.textContent = c.p.label;
       const k = document.createElement("div");
       k.className = "key";
-      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs, set on the Drivers tab), so off by default" : "") +
+      k.textContent = c.p.key + (c.p.hidden ? " - not one of the Tune tab settings (e.g. the drivers' node IDs or the gyro offsets, which belong to one robot), so off by default" : "") +
         (c.clamped ? ` - the file's ${c.raw} is outside ${c.p.min} to ${c.p.max}, so limited` : "");
       td.appendChild(k);
       tr.insertCell().className = "num";
@@ -1272,6 +1277,16 @@ function togglePause() {
 $("pauseBtn").onclick = togglePause;
 $("pauseBtn2").onclick = togglePause;
 $("retryBtn").onclick = () => { send({ cmd: "motorRetry" }); log("Retry motor start"); };
+
+// Gyro re-zero (IMU panel): measured for 1 s on the robot, then saved as the
+// reference the boot-time gyro check compares against.
+$("gyroRezeroBtn").onclick = async () => {
+  if (await ask("Lay the robot down (or prop it up) and keep it completely still for about a second. The gyro offsets " +
+                "are measured, used straight away and saved; each boot then only does a quick check against them.", "Re-zero")) {
+    send({ cmd: "gyroRezero" });
+    log("Re-zero gyro");
+  }
+};
 $("selfRightBtn").onclick = () => send({ cmd: "selfRight" });
 
 function setTile(id, text, cls = "") {
@@ -2356,6 +2371,16 @@ const handlers = {
   notice(m) {
     toast(m.text, m.ok);
     log(m.text);
+  },
+  gyro(m) {
+    gyroBusy = m.busy;
+    const fmt = (a) => a.map((v, i) => "XYZ"[i] + " " + (v >= 0 ? "+" : "") + v.toFixed(3)).join(", ");
+    setText($("gyroInfo"), `Gyro offsets in use: ${fmt(m.off)} \u00b0/s (${m.source}` +
+      (m.noise ? `, noise ${m.noise.toFixed(2)} \u00b0/s` : "") + "). " +
+      (m.saved ? `Saved: ${fmt(m.saved)} \u00b0/s.` : "None saved: the next boot zeroes the gyro and saves it."));
+    const b = $("gyroRezeroBtn");
+    b.textContent = m.busy ? "Re-zeroing..." : "Re-zero gyro";
+    b.disabled = m.busy || !isOpen();
   },
 };
 

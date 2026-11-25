@@ -10,7 +10,44 @@
 // different firmware. Bump the minor version when settings are added, removed
 // or renamed, the major version when an existing setting changes meaning or
 // units, and the patch version for anything else.
-#define FIRMWARE_VERSION     "1.0.0"
+#define FIRMWARE_VERSION     "1.1.0"
+
+// ----------------------------------------------
+// Boot
+// ----------------------------------------------
+// After Serial.begin(), wait up to this long for a USB serial host so the
+// first boot messages can be seen; carries on as soon as one is there. The
+// web page's Log tab has them all anyway (and the serial BOOT command prints
+// the boot timing again).
+constexpr uint32_t BOOT_SERIAL_WAIT_MS = 500;
+// How long setup() waits for both motor drivers to be running FOC before
+// starting the balance controller anyway (the supervisor keeps retrying).
+constexpr uint32_t BOOT_MOTOR_WAIT_MS = 15000;
+
+// ----------------------------------------------
+// Gyro calibration (src/IMUDriver.cpp)
+// ----------------------------------------------
+// At boot the gyro is measured briefly and compared with the offsets saved by
+// the last re-zero (Tune tab, IMU panel). If the robot is still and the
+// reading agrees with them, that fresh reading is used; if it disagrees a full
+// zero is done instead. With no saved offsets (first boot, or after Defaults)
+// a full zero is done and saved.
+constexpr uint32_t GYRO_CHECK_MS = 250;     // quick check at boot
+constexpr uint32_t GYRO_ZERO_MS = 1000;     // full zero (boot or re-zero from the web page)
+// Settling time after the BMI160 is switched on, before its samples are used.
+constexpr uint32_t GYRO_SETTLE_MS = 100;
+// "Still": the standard deviation of every gyro axis over the measurement is
+// below this. The BMI160's own noise is a few tenths of a deg/s per sample;
+// a robot being handled or rocking moves far more.
+constexpr float GYRO_STILL_STD_DPS = 1.0f;
+// Quick check passes if every axis is within this of the saved offset.
+// BMI160 offsets drift about 0.05 deg/s per degree C, so a robot that's much
+// warmer or colder than at the last re-zero can fail it (then it does a full
+// zero, ~1 s longer).
+constexpr float GYRO_CHECK_TOL_DPS = 0.5f;
+// Measurements to try at boot before giving up waiting for the robot to be
+// still (then the saved offsets, or the last measurement, are used).
+constexpr uint8_t GYRO_BOOT_TRIES = 3;
 
 // ----------------------------------------------
 // Network

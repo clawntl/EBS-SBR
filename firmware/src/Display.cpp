@@ -6,8 +6,10 @@
 #include <Adafruit_SSD1306.h>
 
 #include "Battery.h"
+#include "Boot.h"
 #include "CANConfig.h"
 #include "CanBus.h"
+#include "Config.h"
 #include "DeviceLog.h"
 #include "IMUDriver.h"
 #include "LQRControl.h"
@@ -106,6 +108,34 @@ void drawAddress() {
     else                                 display.print("no network");
 }
 
+// Boot screen: step number and name, a detail line, a progress bar and the
+// web page's address (it comes up early, while the rest is still starting).
+void drawBoot() {
+    const Boot::View v = Boot::view();
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    display.print("SBR");
+    display.setTextSize(1);
+    display.setCursor(44, 0);
+    display.print("v" FIRMWARE_VERSION);
+    display.setCursor(44, 8);
+    display.printf("booting %.1fs", millis() / 1000.0f);
+
+    display.setCursor(0, 20);
+    if (v.index) display.printf("%u/%u %s", v.index, v.total, v.name);
+    else         display.print(v.name);
+    display.setCursor(0, 30);
+    display.print(v.detail);
+
+    // Progress: the steps already done, plus half of the running one.
+    const int w = 128;
+    display.drawRect(0, 42, w, 7, SSD1306_WHITE);
+    const int fill = v.total ? ((w - 4) * (2 * (v.index ? v.index - 1 : 0) + 1)) / (2 * v.total) : 0;
+    display.fillRect(2, 44, fill, 3, SSD1306_WHITE);
+
+    drawAddress();
+}
+
 void drawNormal() {
     // Line 1: balance state, large.
     display.setTextSize(2);
@@ -175,20 +205,10 @@ bool initDisplay() {
     displayOk = true;
     display.cp437(true); // so DEGREE maps to the degree sign
     display.setTextColor(SSD1306_WHITE);
-    displayBootMessage("Starting...");
-    return true;
-}
-
-void displayBootMessage(const char *line) {
-    if (!displayOk) return;
     display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(0, 0);
-    display.print("SBR");
-    display.setTextSize(1);
-    display.setCursor(0, 24);
-    display.print(line);
+    drawBoot();
     display.display();
+    return true;
 }
 
 void Task_display(void *pvParams) {
@@ -197,7 +217,8 @@ void Task_display(void *pvParams) {
     TickType_t lastWake = xTaskGetTickCount();
     while (1) {
         display.clearDisplay();
-        if (!drawProblems()) drawNormal();
+        if (Boot::active()) drawBoot();
+        else if (!drawProblems()) drawNormal();
         display.display();
         xTaskDelayUntil(&lastWake, pdMS_TO_TICKS(REFRESH_MS));
     }
