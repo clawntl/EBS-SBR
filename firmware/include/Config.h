@@ -10,7 +10,7 @@
 // different firmware. Bump the minor version when settings are added, removed
 // or renamed, the major version when an existing setting changes meaning or
 // units, and the patch version for anything else.
-#define FIRMWARE_VERSION     "1.2.0"
+#define FIRMWARE_VERSION     "1.2.1"
 
 // ----------------------------------------------
 // Boot
@@ -23,6 +23,12 @@ constexpr uint32_t BOOT_SERIAL_WAIT_MS = 500;
 // How long setup() waits for both motor drivers to be running FOC before
 // starting the balance controller anyway (the supervisor keeps retrying).
 constexpr uint32_t BOOT_MOTOR_WAIT_MS = 15000;
+
+// BMI160 start-up check (initIMU): tries, wait between them, and how long to
+// wait for the first plausible (about 1 g) accelerometer reading each time.
+constexpr uint8_t IMU_INIT_TRIES = 3;
+constexpr uint32_t IMU_INIT_RETRY_MS = 50;
+constexpr uint32_t IMU_PLAUSIBLE_WAIT_MS = 50;
 
 // ----------------------------------------------
 // Gyro calibration (src/IMUDriver.cpp)

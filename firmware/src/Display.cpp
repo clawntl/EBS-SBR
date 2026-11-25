@@ -61,6 +61,7 @@ bool drawProblems() {
     };
 
     if (!canBusOk) add("CAN init failed");
+    if (!imuInitOk()) add("IMU not working");
     if (balanceState == BalanceState::ImuStalled) add("IMU stalled - 0 A");
     if (Battery::isLow()) add("Battery low %.2fV", Battery::voltage());
 

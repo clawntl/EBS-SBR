@@ -52,6 +52,13 @@ void publish(const ControlSample &s) {
 constexpr float ENGAGE_MAX_RATE = 30.0f * DEG_TO_RAD; // rad/s
 constexpr float ENGAGE_MAX_WHEEL = 3.0f;              // rad/s
 constexpr uint32_t ENGAGE_HOLD_MS = 300;
+// ...and the accelerometer on its own must agree: the tilt it reads within
+// ENGAGE_ACCEL_AGREE_DEG of the filtered tilt, with about 1 g in total (not
+// being moved). Held still, the two agree to about a degree. This catches a
+// filtered tilt that is wrong for any reason (still settling just after
+// boot, a gyro offset error) before it can start balancing while lying down.
+constexpr float ENGAGE_ACCEL_AGREE_DEG = 6.0f;
+constexpr float ENGAGE_ACCEL_G_TOL = 0.15f;  // |accel| within 1 +- this
 // Runaway: wheels faster than runawaySpeed (and 1.5x top speed) for this long
 // while balancing -> stop. Catches being lifted while running, or a crash
 // that leaves the wheels spinning free.
@@ -261,6 +268,9 @@ void Task_LQR(void *pvParam) {
   uint8_t lifted = 0;
   uint32_t liftOkSinceMs = 0, liftStartMs = 0;
   float liftPeak = 0;
+
+  DeviceLog::printf("[lqr] started: tilt %+.1f deg, side %+.1f deg, accel %+.2f %+.2f %+.2f g\n",
+                    theta[2] * kRadToDeg, theta[1] * kRadToDeg, imuAccel[0], imuAccel[1], imuAccel[2]);
 
   while (1) {
       // Wait for the next IMU sample. pdTRUE: clear the count, so if samples
@@ -482,12 +492,22 @@ void Task_LQR(void *pvParam) {
       }
 
       if (!engaged && canRun) {
-        const bool ready = fabsf(theta[2] - setPoint) < engageAngle * DEG_TO_RAD
+        // Tilt from the accelerometer alone (same formula as the filter's).
+        const float ax = imuAccel[0], ay = imuAccel[1], az = imuAccel[2];
+        const float accelG = sqrtf(ax * ax + ay * ay + az * az);
+        const float accelTilt = atan2f(-ay, sqrtf(az * az + ax * ax));
+        const bool accelAgrees = fabsf(accelG - 1.0f) < ENGAGE_ACCEL_G_TOL
+                              && fabsf(accelTilt - theta[2]) < ENGAGE_ACCEL_AGREE_DEG * DEG_TO_RAD;
+        const bool ready = imuInitOk()
+                        && fabsf(theta[2] - setPoint) < engageAngle * DEG_TO_RAD
                         && fabsf(theta_dot[2]) < ENGAGE_MAX_RATE
-                        && fabsf(phi_dot) < ENGAGE_MAX_WHEEL;
+                        && fabsf(phi_dot) < ENGAGE_MAX_WHEEL
+                        && accelAgrees;
         if (!ready) readySinceMs = 0;
         else if (!readySinceMs) readySinceMs = stepMs | 1;
         else if (stepMs - readySinceMs >= ENGAGE_HOLD_MS) {
+          DeviceLog::printf("[lqr] balancing: tilt %+.1f deg (accel %+.1f, %.2f g), side %+.1f deg, %.0f s after boot\n",
+                            theta[2] * kRadToDeg, accelTilt * kRadToDeg, accelG, theta[1] * kRadToDeg, stepMs / 1000.0f);
           engaged = true;
           runaway = false;
           runawaySinceMs = 0;

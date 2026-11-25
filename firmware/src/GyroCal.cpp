@@ -58,12 +58,16 @@ float maxDiff(const float a[3], const float b[3]) {
     return fmaxf(fabsf(a[0] - b[0]), fmaxf(fabsf(a[1] - b[1]), fabsf(a[2] - b[2])));
 }
 
-bool still(const GyroMeasurement &m) { return m.maxStd() < GYRO_STILL_STD_DPS; }
+// Still, and real readings: an IMU that isn't answering reads a constant
+// (zero spread) with no gravity, which would otherwise pass as "still".
+bool still(const GyroMeasurement &m) {
+    return m.maxStd() < GYRO_STILL_STD_DPS && m.accelG > 0.7f && m.accelG < 1.3f;
+}
 
 void logMeasurement(const char *what, const GyroMeasurement &m) {
     DeviceLog::printf("[imu] %s: X %+.3f, Y %+.3f, Z %+.3f deg/s (noise %.2f deg/s, accel %.3f g, %u samples)%s\n", what,
                       m.mean[0], m.mean[1], m.mean[2], m.maxStd(), m.accelG, m.samples,
-                      still(m) ? "" : " - MOVING, not used");
+                      still(m) ? "" : " - moving or bad readings, not used");
 }
 
 } // namespace
@@ -85,7 +89,13 @@ const char *sourceName(Source s) {
 void calibrateAtBoot() {
     float saved[3];
     const bool haveSaved = readSaved(saved);
-    if (!imuInitOk()) DeviceLog::println("[imu] BMI160 didn't initialise - the gyro readings may be garbage");
+    if (!imuInitOk()) {
+        // Nothing to measure: keep the saved offsets for when it's fixed.
+        if (haveSaved) setGyroOffsets(saved);
+        Boot::detail("IMU NOT WORKING");
+        DeviceLog::println("[imu] BMI160 not working - gyro not calibrated");
+        return;
+    }
 
     startStatusFlash(LED_GYRO_CAL, 150, 150);
     GyroMeasurement m = {};

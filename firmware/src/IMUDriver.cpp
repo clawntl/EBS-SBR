@@ -7,6 +7,7 @@
 #include "bmi160.h"
 #include "bmi160_defs.h"
 
+#include "Config.h"
 #include "DeviceLog.h"
 #include "PinConfig.h"
 #include "RobotParams.h"
@@ -169,25 +170,16 @@ void accumulateMeasurement(const float raw[3], float accelG) {
 
 } // namespace
 
-bool initIMU() {
-  // Set CS_BMI as output and make inactive
-  pinMode(CS_BMI, OUTPUT);
-  digitalWrite(CS_BMI, HIGH);
-
-  // Create fspi instance
-  fspi = new SPIClass(FSPI);
-  fspi->begin(FSPI_SCK, FSPI_MISO, FSPI_MOSI);
-
-  // Give the data to the struct
-  bmi.id = 0;                       // Device ID
-  bmi.intf = BMI160_SPI_INTF;       // Use SPI
-  bmi.read = BMI160_SPI_read;       // Read function pointer
-  bmi.write = BMI160_SPI_write;     // Write function pointer
-  bmi.delay_ms = BMI160_DELAY_ms;   // Delay function pointer
-
-  // Initialise the BMI160 by performing a soft reset
+// Soft-resets and configures the BMI160. False if it doesn't answer or the
+// configuration fails.
+static bool configureBmi160() {
+  // Soft reset and chip ID check (0xD1).
+  const int8_t initRslt = bmi160_init(&bmi);
+  if (initRslt != BMI160_OK) {
+    DeviceLog::printf("[imu] BMI160 not found (init %d, chip ID 0x%02X)\n", initRslt, bmi.chip_id);
+    return false;
+  }
   int8_t rslt;
-  rslt = bmi160_init(&bmi);
 
   // Seth the accelerometer configuration
   bmi.accel_cfg.odr = BMI160_ACCEL_ODR_1600HZ;      // Data output rate
@@ -236,8 +228,67 @@ bool initIMU() {
                       (readBack & 0x07) == BMI160_GYRO_RANGE_2000_DPS ? " (+-2000 deg/s)" : " - NOT +-2000 deg/s, rates will be scaled wrong!");
   }
 
-  imuOk = rslt == BMI160_OK;
-  DeviceLog::printf("[imu] BMI160 init %s\n", imuOk ? "OK" : "FAILED");
+  if (rslt != BMI160_OK) {
+    DeviceLog::printf("[imu] BMI160 configuration failed (%d)\n", rslt);
+    return false;
+  }
+  return true;
+}
+
+// Reads the sensor directly for up to `ms` and returns true once the
+// accelerometer reads a plausible total (0.7-1.3 g: it isn't being thrown
+// around at power-on). An IMU that isn't answering reads all zeros (or all
+// ones), which would look like an upright, motionless robot.
+static bool readingsPlausible(uint32_t ms, float *lastG) {
+  const uint32_t start = millis();
+  float g = 0;
+  do {
+    struct bmi160_sensor_data a, gy;
+    if (bmi160_get_sensor_data(BMI160_ACCEL_SEL | BMI160_GYRO_SEL, &a, &gy, &bmi) == BMI160_OK) {
+      const float x = convertRawAccel(a.x), y = convertRawAccel(a.y), z = convertRawAccel(a.z);
+      g = sqrtf(x * x + y * y + z * z);
+      if (g > 0.7f && g < 1.3f) { *lastG = g; return true; }
+    }
+    delay(2);
+  } while (millis() - start < ms);
+  *lastG = g;
+  return false;
+}
+
+bool initIMU() {
+  // Set CS_BMI as output and make inactive
+  pinMode(CS_BMI, OUTPUT);
+  digitalWrite(CS_BMI, HIGH);
+
+  // Create fspi instance
+  fspi = new SPIClass(FSPI);
+  fspi->begin(FSPI_SCK, FSPI_MISO, FSPI_MOSI);
+
+  // Give the data to the struct
+  bmi.id = 0;                       // Device ID
+  bmi.intf = BMI160_SPI_INTF;       // Use SPI
+  bmi.read = BMI160_SPI_read;       // Read function pointer
+  bmi.write = BMI160_SPI_write;     // Write function pointer
+  bmi.delay_ms = BMI160_DELAY_ms;   // Delay function pointer
+
+  // Checked and retried: at power-on the BMI160 has occasionally not
+  // answered, and then the controller saw a level, motionless robot (all
+  // readings 0) and started balancing while it lay on its back.
+  imuOk = false;
+  for (uint8_t attempt = 1; attempt <= IMU_INIT_TRIES && !imuOk; attempt++) {
+    if (attempt > 1) delay(IMU_INIT_RETRY_MS);
+    float g = 0;
+    if (!configureBmi160()) {
+      DeviceLog::printf("[imu] attempt %u/%u: no BMI160\n", attempt, IMU_INIT_TRIES);
+    } else if (!readingsPlausible(IMU_PLAUSIBLE_WAIT_MS, &g)) {
+      DeviceLog::printf("[imu] attempt %u/%u: accelerometer reads %.3f g, not about 1 g\n", attempt, IMU_INIT_TRIES, g);
+    } else {
+      imuOk = true;
+      DeviceLog::printf("[imu] BMI160 OK (chip ID 0x%02X, accel %.3f g)%s\n", bmi.chip_id, g,
+                        attempt > 1 ? " after a retry" : "");
+    }
+  }
+  if (!imuOk) DeviceLog::println("[imu] ERROR: BMI160 not working - the robot won't balance");
   return imuOk;
 }
 
@@ -312,10 +363,13 @@ void Task_BMI160(void *pvParams) {
     if (first) {
       // The filter would take a few seconds (several times its ~1 s time
       // constant) to come from 0 to the real angle, which is why setup()
-      // used to wait 3 s before starting the controller.
+      // used to wait 3 s before starting the controller. Only from a
+      // plausible reading (about 1 g): a not-yet-valid sample (all zeros)
+      // would start it at 0 deg, i.e. upright.
       pitch = accelPitch;
       roll = accelRoll;
-      if (rslt == BMI160_OK) first = false;
+      const float g = sqrtf(aX * aX + aY * aY + aZ * aZ);
+      if (rslt == BMI160_OK && g > 0.7f && g < 1.3f) first = false;
     } else {
       pitch = (alpha * pitch) + ((1 - alpha) * accelPitch);
       roll = ((alpha * roll) + ((1 - alpha) * accelRoll));
