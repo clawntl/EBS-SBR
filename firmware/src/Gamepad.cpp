@@ -323,7 +323,7 @@ void Task_gamepad(void *) {
                 if (bs == BalanceState::Balancing) buzz(1, 80, 0, 80);
                 else if (bs == BalanceState::Righting) buzz(2, 60, 60, 50);
                 else if (lastBalance == BalanceState::Balancing &&
-                         (bs == BalanceState::Tipped || bs == BalanceState::Runaway)) buzz(1, 500, 0, 80);
+                         (bs == BalanceState::Tipped || bs == BalanceState::Runaway || bs == BalanceState::OnSide)) buzz(1, 500, 0, 80);
                 lastBalance = bs;
             }
 

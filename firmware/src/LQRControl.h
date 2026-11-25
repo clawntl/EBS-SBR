@@ -20,6 +20,7 @@ enum class BalanceState : uint8_t {
     Waiting,        // within the cut-out angle but not started: hold it upright and still -> 0 A
     Runaway,        // stopped: wheels spun faster than runawaySpeed (lifted?) -> 0 A until restarted
     Righting,       // self-righting: rocking itself up on its hoop (see requestSelfRight)
+    OnSide,         // leaning sideways past sideCutoutAngle (e.g. lying on its side) -> 0 A
 };
 extern volatile BalanceState balanceState;
 

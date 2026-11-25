@@ -8,6 +8,7 @@ float setPointTrim = 0;
 bool learnTrim = true;
 float deactivationAngle = 42;
 float engageAngle = 10;
+float sideCutoutAngle = 30;
 float runawaySpeed = 60;
 float maxWheelCurrent = 1.5;
 bool balancePriority = true;

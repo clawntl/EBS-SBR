@@ -647,6 +647,9 @@
               start angle of the set point and steady, then balances until it tips past the cut-out angle. Lay it down
               (or let it fall) and the motors switch off. If the wheels spin up (lifted, or after a crash) it stops
               and waits to be stood up again.</td></tr>
+            <tr><td>On its side</td><td>Leaning sideways past the side cut-out angle (Tune tab, Balance) it won't
+              balance or self-right: on its side the forward/back tilt reads about 0, like standing up. Stand it up or lay
+              it on its front or back.</td></tr>
             <tr><td>Pause</td><td>Holds the motors at 0 A until resumed (not saved: it's balancing again after a restart).</td></tr>
             <tr><td>Low battery</td><td>Below the battery cutoff (Tune tab, System) it stops balancing until the pack
               is charged or swapped.</td></tr>
@@ -1299,10 +1302,10 @@ const STATE_TEXT = {
   "balancing": "balancing", "tipped": "lying down / fallen", "paused": "paused",
   "motors-off": "motors not ready", "imu-stall": "IMU stalled", "battery-low": "battery low",
   "waiting": "hold it upright and still to start", "runaway": "stopped: wheels ran away (lifted?)",
-  "righting": "self-righting",
+  "righting": "self-righting", "on-side": "lying on its side (past the side cut-out angle)",
 };
 const STATE_CLASS = {
-  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn",
+  "balancing": "ok", "tipped": "", "paused": "warn", "motors-off": "warn", "imu-stall": "bad", "battery-low": "bad", "waiting": "warn", "runaway": "bad", "righting": "warn", "on-side": "",
 };
 const DRV_FLAGS = [[1, "cmd timeout"], [2, "stored align"], [4, "inverted"], [8, "DRV FAULT"]];
 
@@ -1686,7 +1689,7 @@ charts.make({
     { key: "ax",    label: "Accel X (g ×10)", colour: "#ffb3b3", on: false, scale: 10 },
     { key: "ay",    label: "Accel Y (g ×10)", colour: "#a5e8bd", on: false, scale: 10 },
     { key: "az",    label: "Accel Z (g ×10)", colour: "#a8d1ff", on: false, scale: 10 },
-    { key: "pitch", label: "Pitch (°)",       colour: "#e0c35a", on: false },
+    { key: "pitch", label: "Side lean (°)",       colour: "#e0c35a", on: false },
   ],
 });
 charts.make({

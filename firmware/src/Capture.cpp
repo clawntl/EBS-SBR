@@ -108,6 +108,7 @@ const char *stateCsvName(uint8_t s) {
     case BalanceState::Waiting:        return "waiting";
     case BalanceState::Runaway:        return "runaway";
     case BalanceState::Righting:       return "righting";
+    case BalanceState::OnSide:         return "on-side";
     }
     return "?";
 }

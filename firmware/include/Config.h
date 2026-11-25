@@ -10,7 +10,7 @@
 // different firmware. Bump the minor version when settings are added, removed
 // or renamed, the major version when an existing setting changes meaning or
 // units, and the patch version for anything else.
-#define FIRMWARE_VERSION     "1.1.0"
+#define FIRMWARE_VERSION     "1.2.0"
 
 // ----------------------------------------------
 // Boot

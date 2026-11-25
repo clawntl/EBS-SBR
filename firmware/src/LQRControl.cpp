@@ -139,13 +139,14 @@ const char *requestSelfRight(bool *stopping) {
   }
   if (selfRightMode == 0) return "Self-righting is off (Tune tab: Self-righting)";
   if (driverCalibrating()) return "Not during the anti-cogging calibration";
+  if (balanceState == BalanceState::OnSide) return "It's lying on its side: it can only right itself from its front or back (on its hoop)";
   if (balanceState != BalanceState::Tipped) return "It can only right itself while lying down (past the cut-out angle)";
   srStartRequested = true;
   return nullptr;
 }
 
 const char *requestSelfRightPush(uint32_t ms) {
-  if (balanceState != BalanceState::Tipped) return "Lay the robot down on its hoop first";
+  if (balanceState != BalanceState::Tipped) return "Lay the robot down on its hoop (front or back, not its side) first";
   if (ms < 50 || ms > 500) return "Push length must be 50-500 ms";
   srPushRequestMs = ms;
   Capture::start(3, Capture::Trigger::Now);
@@ -198,6 +199,7 @@ const char *balanceStateName(BalanceState s) {
     case BalanceState::Waiting:        return "waiting";
     case BalanceState::Runaway:        return "runaway";
     case BalanceState::Righting:       return "righting";
+    case BalanceState::OnSide:         return "on-side";
   }
   return "?";
 }
@@ -235,6 +237,7 @@ void Task_LQR(void *pvParam) {
   // Start/stop logic (see ENGAGE_* and RUNAWAY_MS).
   bool engaged = false;
   bool runaway = false;
+  bool wasOnSide = false; // for logging changes
   bool spinTesting = false;
   uint32_t spinStartMs = 0;
   uint32_t readySinceMs = 0, runawaySinceMs = 0, stallSinceMs = 0;
@@ -455,9 +458,13 @@ void Task_LQR(void *pvParam) {
       // ---- Start / stop ----------------------------------------------------
       const uint32_t stepMs = millis();
       const bool upright = ((theta[2]) < (deactivationAngle * DEG_TO_RAD)) && ((theta[2])  > (-deactivationAngle * DEG_TO_RAD));
+      // Lying on its side the forward/back tilt reads about 0 (the
+      // accelerometer's forward axis is level), the same as standing up, so
+      // the sideways lean (theta[1]) has its own cut-out.
+      const bool onSide = fabsf(theta[1]) > sideCutoutAngle * DEG_TO_RAD;
       // Don't drive one wheel on its own if the other driver is down.
       const bool batteryOk = !Battery::isLow();
-      const bool canRun = !paused && motorsOk && batteryOk && upright;
+      const bool canRun = !paused && motorsOk && batteryOk && upright && !onSide;
       if (!canRun) engaged = false;
 
       if (engaged) {
@@ -499,9 +506,15 @@ void Task_LQR(void *pvParam) {
         balanceState = !motorsOk  ? BalanceState::MotorsNotReady
                      : paused     ? BalanceState::Paused
                      : !batteryOk ? BalanceState::BatteryLow
+                     : onSide     ? BalanceState::OnSide
                      : !upright   ? BalanceState::Tipped
                      : runaway    ? BalanceState::Runaway
                                   : BalanceState::Waiting;
+      }
+      if (onSide != wasOnSide) {
+        wasOnSide = onSide;
+        DeviceLog::printf(onSide ? "[lqr] on its side (%+.0f deg sideways) - won't balance\n"
+                                 : "[lqr] off its side (%+.0f deg sideways)\n", theta[1] * kRadToDeg);
       }
 
       // ---- Self-righting -------------------------------------------------
@@ -622,6 +635,13 @@ void Task_LQR(void *pvParam) {
             break;
 
           case SrPhase::Rocking: {
+            if (onSide) {
+              // Rocking only works on the hoop; on its side it can't get up.
+              DeviceLog::printf("[selfright] rolled onto its side (%+.0f deg sideways) - stopped\n", theta[1] * kRadToDeg);
+              blockAuto();
+              stop(SrPhase::Idle);
+              break;
+            }
             if (fabsf(tiltDeg) > SR_MAX_TILT_DEG) {
               attemptFailed("rolled too far over");
               break;
@@ -683,7 +703,7 @@ void Task_LQR(void *pvParam) {
             break;
 
           case SrPhase::Push: {
-            if (stepMs - srPhaseStartMs >= srPushMs) {
+            if (onSide || stepMs - srPhaseStartMs >= srPushMs) {
               DeviceLog::println("[selfright] push test done");
               stop(SrPhase::Idle);
               break;

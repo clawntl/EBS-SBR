@@ -21,6 +21,7 @@ extern float setPointTrim;
 extern bool learnTrim;
 extern float deactivationAngle; // Unit: deg
 extern float engageAngle;       // [deg] from the set point, to start balancing
+extern float sideCutoutAngle;   // [deg] sideways lean (theta[1]) beyond which it won't balance
 extern float runawaySpeed;      // [rad/s] wheel speed that stops balancing
 extern float maxWheelCurrent;   // [A] per-wheel current limit (drivers: 2 A)
 // When the motors are at their limit, the tilt terms (K1, K4) get priority
